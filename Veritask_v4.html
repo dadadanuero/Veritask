@@ -13,6 +13,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Besley:ital,wght@0,400;0,500;1,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <style>
@@ -37,6 +38,65 @@
     const STORAGE_APIKEY       = "veritask-apikey";
     const STORAGE_PINNED       = "veritask-pinned-v1";
     const STORAGE_OBSERVATIONS = "veritask-observations-v1";
+
+    // ── SUPABASE ──────────────────────────────────────────────
+    const SUPABASE_URL = "https://wvqzqxoolcshjftigvku.supabase.co";
+    const SUPABASE_KEY = "sb_publishable_Gp1ayLpauT_G_R-VANXjug_huIVlhFX";
+
+    function getDeviceId() {
+      let id = localStorage.getItem("veritask-device-id");
+      if (!id) {
+        id = "dev_" + Math.random().toString(36).substr(2, 9) + "_" + Date.now().toString(36);
+        localStorage.setItem("veritask-device-id", id);
+      }
+      return id;
+    }
+    const DEVICE_ID = getDeviceId();
+
+    let _stateCache = {};
+    let _saveTimer = null;
+    let _storageReady = false;
+
+    async function _saveToSupabase() {
+      if (!_storageReady) return;
+      try {
+        await fetch(`${SUPABASE_URL}/rest/v1/veritask_state`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "apikey": SUPABASE_KEY,
+            "Authorization": `Bearer ${SUPABASE_KEY}`,
+            "Prefer": "resolution=merge-duplicates"
+          },
+          body: JSON.stringify({ device_id: DEVICE_ID, state: _stateCache, updated_at: new Date().toISOString() })
+        });
+      } catch (_) {}
+    }
+
+    async function initStorage() {
+      const ALL_KEYS = [STORAGE_ITEMS, STORAGE_MESSAGES, STORAGE_PREFS, STORAGE_PROFILE,
+        STORAGE_RESTRICTIONS, STORAGE_MOTOR, STORAGE_FEEDBACK, STORAGE_APIKEY,
+        STORAGE_PINNED, STORAGE_OBSERVATIONS];
+      try {
+        const res = await fetch(
+          `${SUPABASE_URL}/rest/v1/veritask_state?device_id=eq.${DEVICE_ID}&select=state`,
+          { headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` } }
+        );
+        const data = await res.json();
+        if (data && data[0]?.state && Object.keys(data[0].state).length > 0) {
+          _stateCache = data[0].state;
+        } else {
+          for (const k of ALL_KEYS) {
+            try { const v = localStorage.getItem(k); if (v) _stateCache[k] = JSON.parse(v); } catch (_) {}
+          }
+        }
+      } catch (_) {
+        for (const k of ALL_KEYS) {
+          try { const v = localStorage.getItem(k); if (v) _stateCache[k] = JSON.parse(v); } catch (_) {}
+        }
+      }
+      _storageReady = true;
+    }
 
     // ── CATEGORIES ───────────────────────────────────────────
     const CATEGORIES = {
@@ -115,18 +175,21 @@
 
     // ── STORAGE ───────────────────────────────────────────────
     async function storageGet(key) {
-      try {
-        const val = localStorage.getItem(key);
-        return val ? JSON.parse(val) : null;
-      } catch (_) { return null; }
+      return _stateCache[key] ?? null;
     }
 
     async function storageSet(key, value) {
       try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) {}
+      _stateCache[key] = value;
+      if (_saveTimer) clearTimeout(_saveTimer);
+      _saveTimer = setTimeout(_saveToSupabase, 2000);
     }
 
     async function storageDelete(key) {
       try { localStorage.removeItem(key); } catch (_) {}
+      delete _stateCache[key];
+      if (_saveTimer) clearTimeout(_saveTimer);
+      _saveTimer = setTimeout(_saveToSupabase, 500);
     }
 
     // ── PROFILE HELPERS ───────────────────────────────────────
@@ -654,6 +717,7 @@ ${existing || "(nada)"}${historyStr}`;
 
       useEffect(() => {
         (async () => {
+          await initStorage();
           const [si, sm, sp, spr, srest, smot, sfb, skey, spin, sobs] = await Promise.all([
             storageGet(STORAGE_ITEMS),
             storageGet(STORAGE_MESSAGES),
