@@ -1,0 +1,1635 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Veritask" />
+  <title>Veritask</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Besley:ital,wght@0,400;0,500;1,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { height: 100%; }
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // ── STORAGE KEYS ─────────────────────────────────────────
+    const STORAGE_ITEMS        = "veritask-items-v3";
+    const STORAGE_MESSAGES     = "veritask-messages-v3";
+    const STORAGE_PREFS        = "veritask-prefs-v3";
+    const STORAGE_PROFILE      = "veritask-profile-v2";
+    const STORAGE_RESTRICTIONS = "veritask-restrictions-v1";
+    const STORAGE_MOTOR        = "veritask-onboarding-v2";
+    const STORAGE_FEEDBACK     = "veritask-feedback-v1";
+    const STORAGE_APIKEY       = "veritask-apikey";
+    const STORAGE_PINNED       = "veritask-pinned-v1";
+    const STORAGE_OBSERVATIONS = "veritask-observations-v1";
+
+    // ── CATEGORIES ───────────────────────────────────────────
+    const CATEGORIES = {
+      compras: { label: "Compras", icon: "◎" },
+      ideas:   { label: "Ideas",   icon: "◇" },
+      diario:  { label: "Diario",  icon: "○" },
+      eventos: { label: "Eventos", icon: "◆" },
+    };
+
+    // ── THEME ────────────────────────────────────────────────
+    const LIGHT = {
+      bg: "#F5F1EA", bgCard: "#FFFFFF", bgInput: "#EEEAE3", border: "#E8E0D4",
+      text: "#2A1F0F", textMid: "#8A7060", textFaint: "#B0A090",
+      accent: "#1E7FD8",
+      navBg: "#F5F1EA", navBorder: "#E8E0D4",
+      msgUser: "#EDE8E0", msgUserText: "#2A1F0F", msgUserBorder: "#DDD8CE",
+      msgBot: "#FFFFFF",  msgBotText: "#2A1F0F",  msgBotBorder: "#E8E0D4",
+      pinned: "#C8B89A",
+    };
+
+    const DARK = {
+      bg: "#14110C", bgCard: "#1E1A14", bgInput: "#242018", border: "#2D2820",
+      text: "#F0EAE0", textMid: "#8A7060", textFaint: "#5A5040",
+      accent: "#1E7FD8",
+      navBg: "#14110C", navBorder: "#2D2820",
+      msgUser: "#1E1A14", msgUserText: "#F0EAE0", msgUserBorder: "#2D2820",
+      msgBot: "#242018",  msgBotText: "#F0EAE0",  msgBotBorder: "#2D2820",
+      pinned: "#4A3D2A",
+    };
+
+    // ── DEFAULTS ─────────────────────────────────────────────
+    const emptyProfile = () => ({ context: "", patterns: [], observations: [] });
+
+    const emptyMotor = () => ({
+      phase: "active",
+      criteriaSet: false,
+      minProfileComplete: false,
+      proactivityTolerance: "unknown",
+      lastProactiveAt: null,
+    });
+
+    // ── HELPERS ──────────────────────────────────────────────
+    function normalize(str) {
+      return (str || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    }
+
+    function stripMarkdown(text) {
+      return (text || "")
+        .replace(/\*\*(.+?)\*\*/g, "$1")
+        .replace(/\*(.+?)\*/g, "$1")
+        .replace(/__(.+?)__/g, "$1")
+        .replace(/_(.+?)_/g, "$1")
+        .replace(/`(.+?)`/g, "$1")
+        .trim();
+    }
+
+    function getNow() {
+      const now = new Date();
+      const date = now.toLocaleDateString("es-ES", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+      const time = now.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+      return `${date}, ${time}`;
+    }
+
+    function getTodayISO() {
+      return new Date().toISOString().split("T")[0];
+    }
+
+    function getDaysUntil(dateStr) {
+      if (!dateStr) return null;
+      try {
+        const t = new Date(dateStr.split("T")[0] + "T00:00:00");
+        const d = new Date(getTodayISO() + "T00:00:00");
+        return Math.round((t - d) / (1000 * 60 * 60 * 24));
+      } catch (_) { return null; }
+    }
+
+    // ── STORAGE ───────────────────────────────────────────────
+    async function storageGet(key) {
+      try {
+        const val = localStorage.getItem(key);
+        return val ? JSON.parse(val) : null;
+      } catch (_) { return null; }
+    }
+
+    async function storageSet(key, value) {
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) {}
+    }
+
+    async function storageDelete(key) {
+      try { localStorage.removeItem(key); } catch (_) {}
+    }
+
+    // ── PROFILE HELPERS ───────────────────────────────────────
+    function applyProfileUpdate(profile, update) {
+      if (!update) return profile;
+      let p = {
+        ...profile,
+        patterns: [...(profile.patterns || [])],
+        observations: [...(profile.observations || [])],
+      };
+
+      if (typeof update === "string") {
+        p.context = p.context ? `${p.context}\n${update}` : update;
+        return p;
+      }
+
+      if (update.contextUpdate) {
+        p.context = p.context ? `${p.context}\n${update.contextUpdate}` : update.contextUpdate;
+      }
+
+      if (update.newObservation) {
+        const obs = update.newObservation;
+        const existIdx = p.observations.findIndex(o => o.type === obs.type);
+        const now = new Date().toISOString();
+        if (existIdx >= 0) {
+          const existing = p.observations[existIdx];
+          const newOccurrences = [...existing.occurrences, now];
+          p.observations[existIdx] = { ...existing, occurrences: newOccurrences, lastSeen: now };
+          // Check elevation: 3+ occurrences within 7–30 days
+          const o = p.observations[existIdx];
+          if (o.occurrences.length >= 3) {
+            const first = new Date(o.occurrences[0]);
+            const last  = new Date(o.occurrences[o.occurrences.length - 1]);
+            const days  = (last - first) / (1000 * 60 * 60 * 24);
+            if (days >= 7 && days <= 30) {
+              p.patterns.push({
+                id: Date.now(), type: o.type, description: o.description,
+                occurrences: o.occurrences.length, confirmedAt: now, active: true,
+              });
+              p.observations.splice(existIdx, 1);
+            } else if (days > 30) {
+              // Reset counter — too spread out
+              p.observations[existIdx] = { ...o, occurrences: [now], firstSeen: now };
+            }
+          }
+        } else {
+          const now2 = new Date().toISOString();
+          p.observations.push({
+            id: Date.now() + Math.random(),
+            type: obs.type || "unknown",
+            description: obs.description || "",
+            occurrences: [now2], firstSeen: now2, lastSeen: now2,
+          });
+        }
+      }
+
+      if (update.elevateToPattern !== undefined) {
+        const idx = p.observations.findIndex(o => o.id === update.elevateToPattern);
+        if (idx >= 0) {
+          const o = p.observations[idx];
+          p.patterns.push({
+            id: Date.now(), type: o.type, description: o.description,
+            occurrences: o.occurrences.length, confirmedAt: new Date().toISOString(), active: true,
+          });
+          p.observations.splice(idx, 1);
+        }
+      }
+
+      if (update.resolveObservation !== undefined) {
+        p.observations = p.observations.filter(o => o.id !== update.resolveObservation);
+      }
+
+      return p;
+    }
+
+    function serializeProfile(profile) {
+      if (!profile) return "(sin perfil aún)";
+      const parts = [];
+      if (profile.context) parts.push(`Contexto: ${profile.context}`);
+      if (profile.patterns?.length) {
+        const active = profile.patterns.filter(p => p.active);
+        if (active.length) parts.push(`Patrones: ${active.map(p => p.description).join("; ")}`);
+      }
+      if (profile.observations?.length) {
+        parts.push(`Observaciones activas: ${profile.observations.map(o => o.description).join("; ")}`);
+      }
+      return parts.length ? parts.join("\n") : "(sin perfil aún)";
+    }
+
+    // ── WELCOME MESSAGE ───────────────────────────────────────
+    const WELCOME_MESSAGE = `Hola. Soy Veritask. Escríbeme lo que tengas en la cabeza — una tarea, una idea, algo que comprar. Sin categorías, sin formularios.`;
+
+    // ── PROMPTS ───────────────────────────────────────────────
+    const MOTOR_PROMPT = `Eres el motor de proactividad de Veritask. Tu única función es evaluar si hay algo concreto y útil que decirle al usuario en este momento, sin que él lo haya pedido.
+
+CRITERIOS PARA HABLAR:
+Solo hablas si se cumplen estas tres condiciones simultáneamente:
+1. Hay un motivo real y concreto — un pendiente que lleva tiempo sin moverse, un patrón relevante detectado, algo próximo que el usuario podría no tener en mente.
+2. El momento es adecuado — la hora actual no está dentro de ninguna restricción real del usuario.
+3. La frecuencia es razonable — respeta la tolerancia a la proactividad del usuario. No hablas si ya lo hiciste recientemente.
+
+FORMATO DE RESPUESTA:
+Si las tres condiciones se cumplen: { "proactive": true, "message": "" }
+Si no se cumplen: { "proactive": false }
+
+El mensaje es directo, sin introducción ni saludo. Mismo tono natural del resto de la app. Sin markdown. Solo JSON válido.`;
+
+    const MAIN_PROMPT = `Eres el motor de Veritask, una app de gestión personal. El usuario escribe en lenguaje natural y tú decides qué hacer con cada entrada. El cliente ejecuta exactamente lo que tú indicas — no interpreta texto libre.
+
+CONTEXTO QUE RECIBES:
+En cada llamada recibes: fecha y hora actuales, perfil del usuario (contexto personal, patrones de comportamiento, observaciones activas), restricciones reales (compromisos y horarios bloqueados), items pendientes con sus IDs, historial reciente del chat, y estado del motor (tolerancia a la proactividad, última intervención proactiva).
+
+TONO:
+Hablas como alguien que conoce al usuario y le habla como tal. Natural y presente, sin esfuerzo visible. La calidez está en el registro, no en la cantidad de palabras. Sin formalidad innecesaria, sin efusividad forzada. Respuestas breves pueden ser cálidas; no confundas concisión con frialdad. Te adaptas al estilo del usuario — si es escueto, eres escueto; si da más contexto, tienes más presencia. Nunca te refieres a categorías internas al usuario.
+
+CLASIFICACIÓN:
+Cuando el usuario introduce algo nuevo, clasifícalo en una de estas cuatro categorías internas:
+- compras: algo que adquirir. El label es solo el nombre del objeto, sin verbo ni contexto adicional
+- ideas: aspiraciones, proyectos futuros, cosas sin urgencia
+- diario: acciones concretas personales, con o sin hora
+- eventos: compromisos con fecha y hora concreta, externos o sociales
+El label de cualquier item debe ser siempre limpio y conciso — el nombre de la acción o cosa en infinitivo, sin el texto completo del usuario, sin "tengo que", sin contexto de fecha. "tengo que llamar al médico esta semana" → label: "Llamar al médico". "voy al gimnasio por las mañanas" → label: "Gimnasio".
+Si hay ambigüedad real entre categorías, pregunta antes de clasificar. No clasifiques mal por no preguntar.
+Antes de anotar cualquier entrada que describa un hábito o actividad recurrente sin hora ni días concretos, pregunta siempre con type: ask.
+
+DETECCIÓN DE CONFLICTOS:
+Antes de anotar cualquier entrada con fecha y hora concreta:
+1. Resuelve la fecha a un día de la semana concreto.
+2. Comprueba si ese día aparece en el array "days" de alguna restricción real. Los días están en inglés: monday–sunday.
+3. Si el día está en una restricción, comprueba si la hora se solapa con startTime y endTime.
+4. Si hay solapamiento, usa siempre type: ask con las opciones: mantener igual, cambiar de hora, cancelar. No evalúes si el conflicto tiene sentido — eso lo decide el usuario.
+5. Si no hay solapamiento, anota directamente.
+
+ACTUALIZACIÓN DE PERFIL:
+En cada interacción, si la entrada del usuario contiene información relevante sobre él — hábitos, rutinas, preferencias, contexto personal — captúrala en profileUpdate. Si menciona horarios o compromisos recurrentes con hora concreta, regístralos también como restricción real en restrictionUpdate. El perfil sirve para comprender y personalizar. Nunca para generar conflictos ni bloquear entradas.
+profileUpdate debe ser objeto: { "contextUpdate": "string con info nueva" }
+La estructura de restrictionUpdate es: { "label": "string", "days": ["monday",...], "startTime": "HH:MM", "endTime": "HH:MM", "confirmed": true }. Los días van en inglés (monday–sunday). Incluye todos los campos.
+Si los días de una restricción son ambiguos (expresiones como "todos los días", "siempre", "cada día"), usa type: ask para confirmar los días exactos antes de registrar. Si la frecuencia es irregular o no estándar — expresiones como "cada dos semanas", "cada quince días", "un martes sí y otro no" — usa también type: ask para confirmar los detalles concretos antes de registrar.
+Cuando registres una restricción real, incluye siempre un campo message con confirmación natural de lo que se registró.
+Si la entrada se registra como restrictionUpdate, no la clasifiques también como item. Una entrada es o una restricción real o un item — nunca las dos cosas a la vez.
+
+PREGUNTAS DE DESCUBRIMIENTO:
+Si el perfil no tiene contexto y no hay restricciones registradas, estás en modo de construcción — pregunta antes de asumir cualquier dato ambiguo sobre el usuario. Cuanto menos sepas del usuario, más debes verificar antes de registrar.
+Después de gestionar lo que el usuario pidió, evalúa si el perfil tiene huecos que limitan tu capacidad de ayudar. Si los tiene, haz una pregunta aunque acabes de registrar algo. Una sola pregunta por interacción, nunca antes de gestionar. Prioridad: primero horarios o compromisos recurrentes, segundo criterio para distinguir entre categorías cuando haya ambigüedad habitual, tercero tolerancia a la proactividad. No preguntes algo que el usuario ya respondió. Si el perfil tiene suficiente contexto para funcionar bien, no preguntes nada.
+Las preguntas de descubrimiento sobre horarios o compromisos deben ser siempre abiertas — nunca de Sí/No. No preguntes si el usuario tiene algo; pregunta directamente qué tiene. Se añaden como campo discoveryQuestion en la misma respuesta que gestiona lo que el usuario pidió — no como un type: ask separado. Ese tipo se reserva exclusivamente para ambigüedades de clasificación y conflictos de horario. Si hay opciones concretas, inclúyelas en options. Si no las hay, omite el array de opciones para que el usuario responda libremente.
+
+CONSULTAS Y ACCIONES:
+Si el mensaje anterior en el historial es una pregunta de descubrimiento de Veritask — reconocible porque empieza por "—" — interpreta la entrada del usuario como respuesta a esa pregunta y procésala como información de perfil antes de hacer cualquier otra cosa. Si la respuesta contiene información concreta sobre horarios o compromisos, regístrala. Si la respuesta es afirmativa pero sin detalle, responde con una pregunta abierta pidiendo los detalles.
+Si el mensaje anterior en el historial es una intervención proactiva del motor, interpreta la entrada del usuario como respuesta a esa intervención antes de hacer cualquier otra cosa. Si el usuario pregunta por sus pendientes, responde directamente — primero lo atrasado o urgente, luego el resto, máximo 4-5 items, solo items con estado pendiente o en progreso. Si el usuario indica que completó algo ("ya hice X", "ya llamé", "listo", "hecho"), busca el item en la lista de pendientes por similitud de label y devuelve siempre type: action con do: update_item, el itemId correcto, y changes: { status: "done" }. Nunca uses type: context para marcar algo como hecho. Si menciona varios, usa do: update_items con array de itemIds. Si el usuario quiere modificar, mover o cancelar algo, ejecuta la acción que indica.
+
+FORMATO DE RESPUESTA:
+Devuelve siempre JSON válido. Sin markdown. Sin texto fuera del JSON.
+
+classify: { "type": "classify", "category": "", "label": "", "datetime": null, "dateLabel": null, "deadline": null, "deadlineLabel": null, "recurrence": null, "message": "" }
+El campo message en classify es obligatorio. Debe ser una confirmación breve y natural de lo que se anotó. Sin mencionar categorías internas.
+multi: { "type": "multi", "items": [ { "category": "", "label": "" } ] }
+ask: { "type": "ask", "question": "", "options": [], "pendingItem": { "label": "", "category": "" } }
+El tipo ask es OBLIGATORIO en estos casos:
+- Cualquier pregunta antes de clasificar por ambigüedad
+- Cualquier pregunta antes de anotar por conflicto de horario
+- Cualquier pregunta de descubrimiento del perfil
+Nunca uses el campo message para hacer una pregunta al usuario. Si hay una pregunta, el tipo es siempre ask.
+action: { "type": "action", "do": "create_item|update_item|update_items|cancel", "item": {}, "itemId": null, "itemIds": [], "changes": {}, "message": "" }
+query: { "type": "query", "message": "", "highlights": [] }
+context: { "type": "context", "message": "", "profileUpdate": {} }
+
+Cualquier pregunta al usuario siempre usa type: ask. Si hay opciones concretas, inclúyelas y añade "Otro" al final. Si no hay opciones concretas, omite el array de opciones y el usuario responderá libremente.
+
+Cualquier respuesta puede incluir opcionalmente: profileUpdate, restrictionUpdate, onboardingUpdate, message, discoveryQuestion.
+profileUpdate: { "contextUpdate": "string con info nueva" }
+restrictionUpdate: { "label": "string", "days": ["monday",...], "startTime": "HH:MM", "endTime": "HH:MM", "confirmed": true } — días en inglés, todos los campos obligatorios.
+discoveryQuestion (opcional en classify, action, context, query): { "question": "", "options": [] } — añade siempre "Otro" al final si no hay opciones concretas.`;
+
+    // ── API ───────────────────────────────────────────────────
+    async function callClaude(systemContent, userContent, apiKey) {
+      const fullPrompt = `${systemContent}\n\n---\n\n${userContent}`;
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [{ role: "user", content: fullPrompt }],
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message || "API error");
+      return data.content?.find(b => b.type === "text")?.text || "";
+    }
+
+    // ── MOTOR EVALUATION ──────────────────────────────────────
+    async function callMotorEvaluation(profile, items, restrictions, motorState, apiKey) {
+      const now = getNow();
+      const pending = items
+        .filter(i => i.status !== "done")
+        .slice(0, 10)
+        .map(i => `- ${i.label}${i.dateLabel ? ` (${i.dateLabel})` : ""}`)
+        .join("\n");
+
+      const userContent = `Fecha y hora actuales: ${now}
+
+PERFIL:
+${serializeProfile(profile)}
+
+ITEMS PENDIENTES:
+${pending || "(ninguno)"}
+
+RESTRICCIONES REALES:
+${restrictions?.length ? JSON.stringify(restrictions) : "(ninguna)"}
+
+ESTADO DEL MOTOR:
+phase: ${motorState.phase}
+proactivityTolerance: ${motorState.proactivityTolerance}
+lastProactiveAt: ${motorState.lastProactiveAt || "(nunca)"}`;
+
+      const raw = await callClaude(MOTOR_PROMPT, userContent, apiKey);
+      const clean = raw.replace(/```json\n?|```/g, "").trim();
+      return JSON.parse(clean);
+    }
+
+    // ── PROCESS INPUT ─────────────────────────────────────────
+    async function processInput(text, items, profile, restrictions, motorState, apiKey, pendingItem = null, recentMessages = []) {
+      const now = getNow();
+
+      const existing = items
+        .filter(i => i.status !== "done")
+        .map(i => `[id:${i.id}] [${CATEGORIES[i.category]?.label || i.category}] "${i.label}"${i.dateLabel ? ` · ${i.dateLabel}` : ""}${i.deadlineLabel ? ` · plazo: ${i.deadlineLabel}` : ""}`)
+        .join("\n");
+
+      const history = recentMessages
+        .filter(m => m.role === "user" || m.role === "assistant" || m.role === "ask")
+        .slice(-5);
+      const historyStr = history.length > 0
+        ? "\n\nHISTORIAL RECIENTE:\n" + history.map(m => {
+            if (m.role === "user") return `Usuario: "${m.text}"`;
+            if (m.role === "ask") return `Veritask: "${m.question}"`;
+            return `Veritask: "${m.text}"`;
+          }).join("\n")
+        : "";
+
+      let userContent = `Fecha y hora actuales: ${now}
+
+PERFIL DEL USUARIO:
+${serializeProfile(profile)}
+
+RESTRICCIONES REALES:
+${restrictions?.length ? JSON.stringify(restrictions) : "(ninguna)"}
+
+ESTADO DEL MOTOR:
+proactivityTolerance: ${motorState?.proactivityTolerance || "unknown"}
+lastProactiveAt: ${motorState?.lastProactiveAt || "(nunca)"}
+
+PENDIENTE:
+${existing || "(nada)"}${historyStr}`;
+
+      if (pendingItem) {
+        userContent += `\n\nITEM PENDIENTE:\n${JSON.stringify(pendingItem)}\n\nOPCIÓN SELECCIONADA POR EL USUARIO: "${text}"\n\nDevuelve una respuesta de tipo "action" con la acción a ejecutar.`;
+      } else {
+        userContent += `\n\nENTRADA DEL USUARIO: "${text}"`;
+      }
+
+      const systemPrompt = MAIN_PROMPT;
+      const raw = await callClaude(systemPrompt, userContent, apiKey);
+      const clean = raw.replace(/```json\n?|```/g, "").trim();
+      return JSON.parse(clean);
+    }
+
+    // ── LONG PRESS HOOK ───────────────────────────────────────
+    function useLongPress(onLongPress, delay = 520) {
+      const timerRef = useRef(null);
+      const posRef   = useRef({ x: 0, y: 0 });
+
+      const start = useCallback((e) => {
+        clearTimeout(timerRef.current);
+        const touch = e?.touches?.[0];
+        posRef.current = { x: touch ? touch.clientX : (e?.clientX ?? 0), y: touch ? touch.clientY : (e?.clientY ?? 0) };
+        timerRef.current = setTimeout(() => onLongPress(posRef.current), delay);
+      }, [onLongPress, delay]);
+
+      const cancel = useCallback(() => {
+        clearTimeout(timerRef.current);
+      }, []);
+
+      return {
+        onMouseDown: (e) => start(e),
+        onMouseUp: cancel,
+        onMouseLeave: cancel,
+        onTouchStart: (e) => { e.preventDefault(); start(e); },
+        onTouchEnd: cancel,
+        onTouchMove: cancel,
+      };
+    }
+
+    // ── SETUP SCREEN ──────────────────────────────────────────
+    function SetupScreen({ onSave }) {
+      const [key,     setKey]     = useState("");
+      const [error,   setError]   = useState("");
+      const [testing, setTesting] = useState(false);
+
+      const handleSave = async () => {
+        const trimmed = key.trim();
+        if (!trimmed.startsWith("sk-ant-")) {
+          setError("La API key debe empezar por sk-ant-");
+          return;
+        }
+        setTesting(true);
+        setError("");
+        try {
+          const res = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": trimmed,
+              "anthropic-version": "2023-06-01",
+              "anthropic-dangerous-direct-browser-access": "true",
+            },
+            body: JSON.stringify({
+              model: "claude-sonnet-4-6",
+              max_tokens: 10,
+              messages: [{ role: "user", content: "ok" }],
+            }),
+          });
+          const data = await res.json();
+          if (data.error) {
+            setError("API key inválida o sin créditos: " + (data.error.message || ""));
+            setTesting(false);
+            return;
+          }
+          await storageSet(STORAGE_APIKEY, trimmed);
+          onSave(trimmed);
+        } catch (e) {
+          setError("No se pudo conectar. Comprueba tu conexión.");
+          setTesting(false);
+        }
+      };
+
+      return (
+        <div style={{ height: "100%", background: LIGHT.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ maxWidth: 400, width: "100%" }}>
+            <h1 style={{ fontSize: 22, fontWeight: 500, fontFamily: "Besley, Georgia, serif", fontStyle: "italic", color: LIGHT.text, marginBottom: 8 }}>Veritask</h1>
+            <p style={{ fontSize: 14, color: LIGHT.textMid, marginBottom: 32, lineHeight: 1.6 }}>
+              Para funcionar necesita una API key de Anthropic. Consíguela en{" "}
+              <span style={{ color: LIGHT.accent }}>console.anthropic.com</span> y pégala aquí. Se guarda solo en este dispositivo.
+            </p>
+            <input
+              value={key}
+              onChange={e => setKey(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && handleSave()}
+              placeholder="sk-ant-..."
+              type="password"
+              style={{ width: "100%", padding: "12px 16px", fontSize: 14, background: LIGHT.bgInput, border: `1.5px solid ${error ? "#E05050" : LIGHT.border}`, borderRadius: 12, color: LIGHT.text, outline: "none", fontFamily: "monospace", marginBottom: 8 }}
+            />
+            {error && <p style={{ fontSize: 13, color: "#E05050", marginBottom: 12 }}>{error}</p>}
+            <button
+              onClick={handleSave}
+              disabled={testing || !key.trim()}
+              style={{ width: "100%", padding: "12px", fontSize: 15, fontWeight: 600, background: testing || !key.trim() ? LIGHT.border : LIGHT.accent, border: "none", borderRadius: 12, color: "#FFF", cursor: testing || !key.trim() ? "default" : "pointer", fontFamily: "inherit", transition: "background 0.15s" }}
+            >
+              {testing ? "Verificando..." : "Guardar y continuar"}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── CONTEXT MENU ──────────────────────────────────────────
+    function ContextMenu({ item, options, onClose, t, pos }) {
+      const menuWidth = 220;
+      const vx    = Math.min((pos?.x ?? 40), window.innerWidth - menuWidth - 8);
+      const vy    = pos?.y ?? 200;
+      const above = vy > window.innerHeight / 2;
+      return (
+        <>
+          <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 200 }} />
+          <div style={{
+            position: "fixed", left: vx, top: vy,
+            transform: above ? "translateY(-100%)" : "translateY(8px)",
+            zIndex: 201, background: t.bgCard,
+            border: `1px solid ${t.border}`, borderRadius: 12,
+            boxShadow: "0 4px 24px rgba(0,0,0,0.18), 0 1px 4px rgba(0,0,0,0.08)",
+            minWidth: menuWidth, overflow: "hidden",
+          }}>
+            <div style={{ padding: "7px 14px 6px", borderBottom: `1px solid ${t.border}` }}>
+              <p style={{ fontSize: 10, fontWeight: 700, color: t.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item?.label}</p>
+            </div>
+            {options.map(({ label, danger, action }) => (
+              <button
+                key={label}
+                onClick={() => { action(); onClose(); }}
+                style={{ width: "100%", padding: "11px 14px", textAlign: "left", fontSize: 14, background: "transparent", border: "none", borderBottom: `1px solid ${t.border}`, cursor: "pointer", color: danger ? "#D03030" : t.text, fontFamily: "inherit", display: "block" }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      );
+    }
+
+    // ── AVISO BLOCK ───────────────────────────────────────────
+    function AvisoBlock({ item, sub, t, tinted, onLongPress }) {
+      const lp = useLongPress(onLongPress);
+      return (
+        <div
+          {...lp}
+          style={{
+            flexShrink: 0, width: 184, height: 44,
+            background: tinted ? `${t.pinned}30` : t.bgCard,
+            border: `1.5px solid ${tinted ? t.pinned : t.border}`,
+            borderRadius: 10, padding: "5px 10px",
+            display: "flex", flexDirection: "column", justifyContent: "center",
+            cursor: "default", userSelect: "none", overflow: "hidden",
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 600, color: t.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.3 }}>
+            {item.label}
+          </div>
+          <div style={{ fontSize: 10, color: t.textFaint, marginTop: 1 }}>{sub}</div>
+        </div>
+      );
+    }
+
+    // ── BARRA DE AVISOS ───────────────────────────────────────
+    function BarraDeAvisos({ items, pinnedIds, t, onComplete, onAhoraNo, onEnviarAlChat, onDesfijar, onTogglePin, onRemove }) {
+      const [menuTarget, setMenuTarget] = useState(null); // { item, isPinned, pos }
+
+      const urgentes = items.filter(i => {
+        if (i.status === "done") return false;
+        const days = getDaysUntil(i.datetime || i.deadline);
+        return days !== null && days >= 0 && days <= 1;
+      });
+
+      const fijados = items.filter(i => i.status !== "done" && pinnedIds.includes(i.id));
+
+      if (urgentes.length === 0 && fijados.length === 0) return null;
+
+      return (
+        <>
+          <div style={{ flexShrink: 0, borderBottom: `1px solid ${t.navBorder}`, background: t.navBg }}>
+            {urgentes.length > 0 && (
+              <div style={{ padding: "6px 14px 5px" }}>
+                <span style={{ fontSize: 10, color: t.textFaint, fontWeight: 600, display: "block", marginBottom: 4 }}>
+                  vencen pronto
+                </span>
+                <div style={{ display: "flex", gap: 6, overflowX: "auto" }}>
+                  {urgentes.map(item => {
+                    const days = getDaysUntil(item.datetime || item.deadline);
+                    return (
+                      <AvisoBlock
+                        key={item.id} item={item}
+                        sub={days === 0 ? "hoy" : "mañana"}
+                        t={t} tinted={false}
+                        onLongPress={(pos) => setMenuTarget({ item, isPinned: pinnedIds.includes(item.id), pos })}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {fijados.length > 0 && (
+              <>
+                {urgentes.length > 0 && <div style={{ height: 1, background: t.border, margin: "0 14px" }} />}
+                <div style={{ padding: "5px 14px 6px" }}>
+                  <span style={{ fontSize: 10, color: t.textFaint, fontWeight: 600, display: "block", marginBottom: 4 }}>
+                    fijados por ti
+                  </span>
+                  <div style={{ display: "flex", gap: 6, overflowX: "auto" }}>
+                    {fijados.map(item => (
+                      <AvisoBlock
+                        key={item.id} item={item}
+                        sub="fijado"
+                        t={t} tinted={true}
+                        onLongPress={(pos) => setMenuTarget({ item, isPinned: true, pos })}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {menuTarget && (
+            <ContextMenu
+              item={menuTarget.item}
+              t={t}
+              pos={menuTarget.pos}
+              onClose={() => setMenuTarget(null)}
+              options={[
+                { label: "Completada",    action: () => onComplete(menuTarget.item.id) },
+                { label: menuTarget.isPinned ? "Desfijar tarea" : "Fijar tarea", action: () => onTogglePin(menuTarget.item.id) },
+                { label: "Enviar al chat", action: () => onEnviarAlChat(menuTarget.item) },
+                { label: "Ahora no",      action: () => onAhoraNo(menuTarget.item.id) },
+                { label: "Eliminar",      danger: true, action: () => onRemove(menuTarget.item.id) },
+              ]}
+            />
+          )}
+        </>
+      );
+    }
+
+    // ── APP ───────────────────────────────────────────────────
+    function App() {
+      const [items,          setItems]          = useState([]);
+      const [messages,       setMessages]       = useState([]);
+      const [dark,           setDark]           = useState(false);
+      const [loaded,         setLoaded]         = useState(false);
+      const [screen,         setScreen]         = useState("home");
+      const [activeCategory, setActiveCategory] = useState("diario");
+      const [highlights,     setHighlights]     = useState([]);
+      const [profile,        setProfile]        = useState(emptyProfile());
+      const [restrictions,   setRestrictions]   = useState([]);
+      const [motorState,     setMotorState]     = useState(null);
+      const [feedback,       setFeedback]       = useState([]);
+      const [observations,   setObservations]   = useState([]);
+      const [apiKey,         setApiKey]         = useState(null);
+      const [pinnedIds,      setPinnedIds]      = useState([]);
+      const [attachedChip,   setAttachedChip]   = useState(null);
+
+      const t = dark ? DARK : LIGHT;
+
+      useEffect(() => {
+        (async () => {
+          const [si, sm, sp, spr, srest, smot, sfb, skey, spin, sobs] = await Promise.all([
+            storageGet(STORAGE_ITEMS),
+            storageGet(STORAGE_MESSAGES),
+            storageGet(STORAGE_PREFS),
+            storageGet(STORAGE_PROFILE),
+            storageGet(STORAGE_RESTRICTIONS),
+            storageGet(STORAGE_MOTOR),
+            storageGet(STORAGE_FEEDBACK),
+            storageGet(STORAGE_APIKEY),
+            storageGet(STORAGE_PINNED),
+            storageGet(STORAGE_OBSERVATIONS),
+          ]);
+
+          if (Array.isArray(si)) setItems(si);
+          if (Array.isArray(sm)) setMessages(sm);
+          if (sp?.dark !== undefined) setDark(sp.dark);
+
+          // Profile: migrate from old string format if needed
+          if (spr) {
+            if (typeof spr === "string") {
+              setProfile({ ...emptyProfile(), context: spr });
+            } else {
+              setProfile({ ...emptyProfile(), ...spr });
+            }
+          }
+
+          if (Array.isArray(srest)) setRestrictions(srest);
+          if (Array.isArray(sfb)) setFeedback(sfb);
+          if (typeof skey === "string") setApiKey(skey);
+          if (Array.isArray(spin)) setPinnedIds(spin);
+          if (Array.isArray(sobs)) setObservations(sobs);
+
+          if (!smot) {
+            const initial = emptyMotor();
+            await storageSet(STORAGE_MOTOR, initial);
+            setMotorState(initial);
+          } else {
+            setMotorState({ ...emptyMotor(), ...smot });
+          }
+
+          setLoaded(true);
+        })();
+      }, []);
+
+      useEffect(() => { if (loaded) storageSet(STORAGE_ITEMS,        items);        }, [items,        loaded]);
+      useEffect(() => { if (loaded) storageSet(STORAGE_MESSAGES,     messages);     }, [messages,     loaded]);
+      useEffect(() => { if (loaded) storageSet(STORAGE_PREFS,        { dark });     }, [dark,         loaded]);
+      useEffect(() => { if (loaded) storageSet(STORAGE_PROFILE,      profile);      }, [profile,      loaded]);
+      useEffect(() => { if (loaded) storageSet(STORAGE_RESTRICTIONS, restrictions); }, [restrictions, loaded]);
+      useEffect(() => { if (loaded) storageSet(STORAGE_FEEDBACK,     feedback);     }, [feedback,     loaded]);
+      useEffect(() => { if (loaded) storageSet(STORAGE_PINNED,       pinnedIds);    }, [pinnedIds,    loaded]);
+      useEffect(() => { if (loaded) storageSet(STORAGE_OBSERVATIONS, observations); }, [observations, loaded]);
+
+      const commitItem = useCallback((text, label, category, extra = {}) => {
+        const recStr = typeof extra.recurrence === "string" ? extra.recurrence : null;
+        setItems(prev => [{
+          id: Date.now(), text, label, category,
+          status: "pending", createdAt: Date.now(),
+          ...extra, recurrence: recStr,
+        }, ...prev]);
+      }, []);
+
+      const pushMessage = useCallback((role, text) => {
+        setMessages(prev => [...prev, { id: Date.now() + Math.random(), role, text }]);
+      }, []);
+
+      const advance = useCallback((id) => setItems(prev => prev.map(i => {
+        if (i.id !== id) return i;
+        if (i.status === "done") return { ...i, status: "pending" };
+        return { ...i, status: { pending: "doing", doing: "done" }[i.status] || i.status };
+      })), []);
+
+      const remove = useCallback((id) => setItems(prev => prev.filter(i => i.id !== id)), []);
+
+      const togglePin = useCallback((id) => {
+        setPinnedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+      }, []);
+
+      const markDone = useCallback((id) => {
+        setItems(prev => prev.map(i => i.id === id ? { ...i, status: "done" } : i));
+        setPinnedIds(prev => prev.filter(x => x !== id));
+      }, []);
+
+      const ahoraNo = useCallback((id) => {
+        setItems(prev => prev.map(i =>
+          i.id === id ? { ...i, datetime: null, dateLabel: null, deadline: null, deadlineLabel: null } : i
+        ));
+      }, []);
+
+      const handleReset = useCallback(async () => {
+        await Promise.all([
+          storageDelete(STORAGE_ITEMS), storageDelete(STORAGE_MESSAGES),
+          storageDelete(STORAGE_PREFS), storageDelete(STORAGE_PROFILE),
+          storageDelete(STORAGE_RESTRICTIONS), storageDelete(STORAGE_MOTOR),
+          storageDelete(STORAGE_FEEDBACK), storageDelete(STORAGE_PINNED),
+          storageDelete(STORAGE_OBSERVATIONS),
+        ]);
+        const initial = emptyMotor();
+        await storageSet(STORAGE_MOTOR, initial);
+        setItems([]); setMessages([]); setDark(false); setScreen("home");
+        setActiveCategory("diario"); setHighlights([]); setProfile(emptyProfile());
+        setRestrictions([]); setMotorState(initial); setFeedback([]);
+        setPinnedIds([]); setObservations([]); setAttachedChip(null);
+      }, []);
+
+      if (!loaded || motorState === null) return (
+        <div style={{ height: "100%", background: "#F5F1EA", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Dots t={LIGHT} />
+        </div>
+      );
+
+      if (!apiKey) return <SetupScreen onSave={setApiKey} />;
+
+      const hasRegistro = feedback.length > 0 || observations.length > 0;
+
+      return (
+        <div style={{ height: "100%", display: "flex", flexDirection: "column", background: t.bg, color: t.text, fontFamily: "'Inter', -apple-system, 'Helvetica Neue', Arial, sans-serif", fontSize: 15 }}>
+          <style>{`
+            *{box-sizing:border-box}
+            input,button,textarea{font-family:inherit}
+            input::placeholder,textarea::placeholder{color:${t.textFaint}}
+            ::-webkit-scrollbar{width:4px;height:4px}
+            ::-webkit-scrollbar-thumb{background:${t.border};border-radius:2px}
+            @keyframes blink{0%,80%,100%{opacity:0.2}40%{opacity:1}}
+          `}</style>
+
+          {/* ── NAV ── */}
+          <nav style={{ flexShrink: 0, background: t.navBg, borderBottom: `1px solid ${t.navBorder}`, padding: "0 14px", zIndex: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, height: 52 }}>
+              <span style={{ fontSize: 17, fontWeight: 500, fontFamily: "Besley, Georgia, serif", fontStyle: "italic", color: t.text, marginRight: 6 }}>Veritask</span>
+              <NavBtn label="Chat"   active={screen === "home"}    onClick={() => { setScreen("home"); setHighlights([]); }} t={t} />
+              <NavBtn label="Listas" active={screen === "lists"}   onClick={() => setScreen("lists")} t={t} />
+              {hasRegistro && (
+                <NavBtn label="Registro" active={screen === "registro"} onClick={() => setScreen("registro")} t={t} />
+              )}
+              <div style={{ flex: 1 }} />
+              <button onClick={handleReset} title="Reset demo" style={{ background: "transparent", border: `1px solid ${t.border}`, cursor: "pointer", fontSize: 12, color: t.textFaint, padding: "3px 8px", borderRadius: 12, fontFamily: "inherit" }}>
+                Reset
+              </button>
+              <button onClick={() => setDark(v => !v)} style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 16, color: t.textMid, padding: "0 0 0 6px" }}>
+                {dark ? "☀" : "☾"}
+              </button>
+            </div>
+          </nav>
+
+          {/* ── CONTENT ── */}
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+
+            {/* Barra de avisos — solo en home */}
+            {screen === "home" && (
+              <BarraDeAvisos
+                items={items}
+                pinnedIds={pinnedIds}
+                t={t}
+                onComplete={markDone}
+                onAhoraNo={ahoraNo}
+                onEnviarAlChat={(item) => { setAttachedChip(item); setScreen("home"); }}
+                onDesfijar={(id) => setPinnedIds(prev => prev.filter(x => x !== id))}
+                onTogglePin={togglePin}
+                onRemove={remove}
+              />
+            )}
+
+            {screen === "home"
+              ? <HomeScreen
+                  items={items} setItems={setItems}
+                  messages={messages} setMessages={setMessages}
+                  t={t}
+                  profile={profile} setProfile={setProfile}
+                  restrictions={restrictions} setRestrictions={setRestrictions}
+                  motorState={motorState} setMotorState={setMotorState}
+                  commitItem={commitItem} pushMessage={pushMessage}
+                  highlights={highlights} setHighlights={setHighlights}
+                  feedback={feedback} setFeedback={setFeedback}
+                  apiKey={apiKey}
+                  attachedChip={attachedChip}
+                  clearChip={() => setAttachedChip(null)}
+                />
+              : screen === "lists"
+              ? <ListsScreen
+                  items={items} t={t} restrictions={restrictions}
+                  activeCategory={activeCategory} setActiveCategory={setActiveCategory}
+                  onAdvance={advance} onRemove={remove} onMarkDone={markDone}
+                  highlights={highlights}
+                  pinnedIds={pinnedIds} onTogglePin={togglePin}
+                  onEnviarAlChat={(item) => { setAttachedChip(item); setScreen("home"); }}
+                />
+              : <RegistroScreen
+                  feedback={feedback}
+                  observations={observations}
+                  setObservations={setObservations}
+                  t={t}
+                />
+            }
+          </div>
+        </div>
+      );
+    }
+
+    // ── HOME SCREEN ───────────────────────────────────────────
+    function HomeScreen({
+      items, setItems, messages, setMessages, t,
+      profile, setProfile, restrictions, setRestrictions,
+      motorState, setMotorState, commitItem, pushMessage,
+      highlights, setHighlights, feedback, setFeedback, apiKey,
+      attachedChip, clearChip,
+    }) {
+      const [input,            setInput]            = useState("");
+      const [analyzing,        setAnalyzing]        = useState(false);
+      const [feedbackPanelId,  setFeedbackPanelId]  = useState(null);
+      const [feedbackOtroMode, setFeedbackOtroMode] = useState(false);
+      const [feedbackOtroText, setFeedbackOtroText] = useState("");
+      const [pendingAskCtx,    setPendingAskCtx]    = useState(null);
+      const bottomRef    = useRef(null);
+      const inputRef     = useRef(null);
+      const motorEvalRef = useRef(false);
+
+      // Welcome message
+      const welcomeInjected = useRef(false);
+      useEffect(() => {
+        if (messages.length === 0 && motorState?.phase === "active" && !welcomeInjected.current) {
+          welcomeInjected.current = true;
+          pushMessage("assistant", WELCOME_MESSAGE);
+        }
+        if (messages.length > 0) welcomeInjected.current = false;
+      }, [messages.length, motorState?.phase]); // eslint-disable-line
+
+      // Motor proactive evaluation — once per session, only when not in active onboarding
+      useEffect(() => {
+        if (!motorState || motorState.phase === "active" || motorEvalRef.current || !apiKey) return;
+        const thirtyMinutesAgo = Date.now() - 30 * 60 * 1000;
+        if (messages.some(m => Math.floor(m.id) > thirtyMinutesAgo)) return;
+        motorEvalRef.current = true;
+        (async () => {
+          try {
+            const result = await callMotorEvaluation(profile, items, restrictions, motorState, apiKey);
+            if (result?.proactive && result.message) {
+              pushMessage("assistant", stripMarkdown(result.message));
+              setMotorState(prev => {
+                const updated = { ...prev, lastProactiveAt: new Date().toISOString() };
+                storageSet(STORAGE_MOTOR, updated);
+                return updated;
+              });
+            }
+          } catch (_) {
+            // Silent fail — motor evaluation is best-effort
+          }
+        })();
+      }, []); // eslint-disable-line
+
+      useEffect(() => {
+        setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+      }, [messages, analyzing]);
+
+      const saveFeedback = useCallback((msg, feedbackType, note) => {
+        const msgIndex = messages.findIndex(m => m.id === msg.id);
+        const userMsg  = messages.slice(0, msgIndex).reverse().find(m => m.role === "user");
+        const msgTime  = Math.floor(msg.id);
+        const recentItem = items.find(item => Math.abs(item.createdAt - msgTime) < 5000);
+        const fb = {
+          id: Date.now() + Math.random(),
+          timestamp: new Date().toISOString(),
+          msgId: msg.id,
+          userMessage: userMsg?.text || "",
+          assistantMessage: msg.text || "",
+          itemCreated: recentItem ? {
+            label: recentItem.label, category: recentItem.category,
+            dateLabel: recentItem.dateLabel || null, deadlineLabel: recentItem.deadlineLabel || null,
+          } : null,
+          feedbackType, note: note || null,
+        };
+        setFeedback(prev => [...prev, fb]);
+        setFeedbackPanelId(null); setFeedbackOtroMode(false); setFeedbackOtroText("");
+      }, [messages, items, setFeedback]);
+
+      const applyResponse = useCallback(async (resp, originalText) => {
+        if (resp.profileUpdate) {
+          setProfile(prev => applyProfileUpdate(prev, resp.profileUpdate));
+        }
+        if (resp.restrictionUpdate) {
+          setRestrictions(prev => {
+            const idx = prev.findIndex(r => r.label === resp.restrictionUpdate.label);
+            if (idx >= 0) {
+              const updated = [...prev];
+              updated[idx] = { ...prev[idx], ...resp.restrictionUpdate, confirmed: true };
+              return updated;
+            }
+            return [...prev, { ...resp.restrictionUpdate, confirmed: true }];
+          });
+        }
+        if (resp.onboardingUpdate) {
+          setMotorState(prev => {
+            const updated = { ...(prev || emptyMotor()), ...resp.onboardingUpdate };
+            storageSet(STORAGE_MOTOR, updated);
+            return updated;
+          });
+        }
+
+        switch (resp.type) {
+          case "classify": {
+            const recStr = typeof resp.recurrence === "string" ? resp.recurrence : null;
+            commitItem(originalText, resp.label || originalText, resp.category || "diario", {
+              datetime: resp.datetime || null, dateLabel: resp.dateLabel || null,
+              deadline: resp.deadline || null, deadlineLabel: resp.deadlineLabel || null,
+              recurrence: recStr,
+            });
+            const cat   = CATEGORIES[resp.category || "diario"];
+            const extra = resp.dateLabel ? ` · ${resp.dateLabel}` : resp.deadlineLabel ? ` · plazo ${resp.deadlineLabel}` : recStr ? ` · ${recStr}` : "";
+            const confirmText = resp.message
+              ? stripMarkdown(resp.message)
+              : `${cat?.icon || "·"} Anotado en ${cat?.label?.toLowerCase() || "lista"}. ${resp.label || originalText}${extra}`;
+            pushMessage("assistant", confirmText);
+            break;
+          }
+          case "multi": {
+            const ts = Date.now();
+            const newItems = (resp.items || []).map((item, idx) => ({
+              id: ts + idx, text: originalText,
+              label: item.label || originalText, category: item.category || "diario",
+              status: "pending", createdAt: ts,
+              datetime: item.datetime || null, dateLabel: item.dateLabel || null,
+              deadline: item.deadline || null, deadlineLabel: item.deadlineLabel || null,
+              recurrence: typeof item.recurrence === "string" ? item.recurrence : null,
+            }));
+            setItems(prev => [...newItems, ...prev]);
+            pushMessage("assistant", resp.message
+              ? stripMarkdown(resp.message)
+              : `Anotado: ${newItems.map(i => i.label).join(", ")}.`
+            );
+            break;
+          }
+          case "ask": {
+            if (!resp.options || resp.options.length === 0) {
+              if (resp.message) pushMessage("assistant", stripMarkdown(resp.message));
+              break;
+            }
+            setMessages(prev => [...prev, {
+              id: Date.now() + Math.random(), role: "ask",
+              question: resp.question || "¿Cómo lo clasifico?",
+              options: resp.options || [],
+              pendingItem: resp.pendingItem || null,
+              selectedIdx: null,
+            }]);
+            break;
+          }
+          case "action": {
+            if (resp.do === "create_item" && resp.item) {
+              commitItem(
+                resp.item.label || originalText, resp.item.label || originalText,
+                resp.item.category || "diario", {
+                  datetime: resp.item.datetime || null, dateLabel: resp.item.dateLabel || null,
+                  deadline: resp.item.deadline || null, deadlineLabel: resp.item.deadlineLabel || null,
+                }
+              );
+            } else if (resp.do === "update_item" && resp.itemId) {
+              setItems(prev => prev.map(i => String(i.id) === String(resp.itemId) ? { ...i, ...(resp.changes || {}) } : i));
+            } else if (resp.do === "update_items" && Array.isArray(resp.itemIds)) {
+              setItems(prev => prev.map(i => resp.itemIds.map(String).includes(String(i.id)) ? { ...i, ...(resp.changes || {}) } : i));
+            }
+            if (resp.message) pushMessage("assistant", stripMarkdown(resp.message));
+            break;
+          }
+          case "query": {
+            if (resp.message) pushMessage("assistant", stripMarkdown(resp.message));
+            if (resp.highlights?.length) setHighlights(resp.highlights);
+            break;
+          }
+          default: {
+            if (resp.message) pushMessage("assistant", stripMarkdown(resp.message));
+            break;
+          }
+        }
+
+        // Discovery question — se renderiza después de la respuesta principal
+        if (resp.discoveryQuestion?.question) {
+          const dq = resp.discoveryQuestion;
+          setMessages(prev => [...prev, {
+            id: Date.now() + Math.random(), role: "ask",
+            question: dq.question,
+            options: Array.isArray(dq.options) ? dq.options : [],
+            pendingItem: null,
+            selectedIdx: null,
+          }]);
+        }
+      }, [commitItem, pushMessage, setMessages, setProfile, setRestrictions, setMotorState, setHighlights, setItems]);
+
+      const handleOptionSelect = useCallback(async (askMsgId, idx) => {
+        const askMsg = messages.find(m => m.id === askMsgId && m.role === "ask");
+        if (!askMsg || askMsg.selectedIdx !== null || analyzing) return;
+        setMessages(prev => prev.map(m => m.id === askMsgId ? { ...m, selectedIdx: idx } : m));
+        const selectedOption = askMsg.options[idx];
+        if (selectedOption === "Otro") {
+          setPendingAskCtx({ pendingItem: askMsg.pendingItem });
+          inputRef.current?.focus();
+          return;
+        }
+        setAnalyzing(true);
+        try {
+          const resp = await processInput(selectedOption, items, profile, restrictions, motorState, apiKey, askMsg.pendingItem, messages);
+          await applyResponse(resp, selectedOption);
+        } catch (_) {
+          pushMessage("assistant", "Anotado.");
+        }
+        setAnalyzing(false);
+        inputRef.current?.focus();
+      }, [messages, setMessages, analyzing, items, profile, restrictions, motorState, apiKey, applyResponse, pushMessage]);
+
+      const handleSend = useCallback(async () => {
+        const text = input.trim();
+        if (!text || analyzing) return;
+        setHighlights([]);
+        const chip = attachedChip;
+        const askCtx = pendingAskCtx;
+        setPendingAskCtx(null);
+        clearChip();
+        setInput("");
+
+        const msgId = Date.now() + Math.random();
+        setMessages(prev => [...prev, { id: msgId, role: "user", text, chip: chip || null }]);
+
+        setAnalyzing(true);
+        try {
+          const apiText = chip ? `[Contexto: item "${chip.label}"] ${text}` : text;
+          const resp = await processInput(apiText, items, profile, restrictions, motorState, apiKey, askCtx?.pendingItem ?? null, messages);
+          await applyResponse(resp, text);
+        } catch (e) {
+          const errMsg = e?.message || "";
+          if (/credit|billing|balance|quota/i.test(errMsg)) {
+            pushMessage("assistant", "Sin créditos disponibles. Recarga en console.anthropic.com");
+          } else {
+            commitItem(text, text, "diario");
+            pushMessage("assistant", "Anotado.");
+          }
+        }
+        setAnalyzing(false);
+        inputRef.current?.focus();
+      }, [input, analyzing, attachedChip, clearChip, pendingAskCtx, items, profile, restrictions, motorState, apiKey, applyResponse, commitItem, pushMessage, setHighlights, messages]);
+
+      const pending = items.filter(i => i.status === "pending").length;
+
+      return (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+
+          {/* Messages */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "16px 16px 8px" }}>
+
+            {messages.length === 0 && (
+              <div style={{ textAlign: "center", padding: "52px 16px" }}>
+                <p style={{ fontSize: 20, fontWeight: 700, color: t.text, margin: "0 0 8px", letterSpacing: "-0.3px" }}>Solo tienes que escribir.</p>
+                <p style={{ fontSize: 14, color: t.textFaint, margin: 0, lineHeight: 1.6 }}>Nunca organizar. Veritask se encarga del resto.</p>
+                {pending > 0 && <p style={{ fontSize: 12, color: t.textFaint, marginTop: 16 }}>{pending} {pending === 1 ? "cosa pendiente" : "cosas pendientes"}</p>}
+              </div>
+            )}
+
+            {messages.map((msg, i) => {
+              // ── ask ──
+              if (msg.role === "ask") {
+                return (
+                  <div key={msg.id} style={{ marginTop: 16, display: "flex", justifyContent: "flex-start" }}>
+                    <div style={{ maxWidth: "88%", padding: "12px 14px", borderRadius: "18px 18px 18px 4px", background: t.msgBot, border: `1px solid ${t.msgBotBorder}` }}>
+                      <p style={{ margin: "0 0 10px", fontSize: 14, color: t.msgBotText, lineHeight: 1.5 }}>— {msg.question}</p>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {msg.options.map((opt, idx) => {
+                          const isSelected  = msg.selectedIdx === idx;
+                          const hasSelected = msg.selectedIdx !== null;
+                          return (
+                            <button
+                              key={idx}
+                              onClick={() => handleOptionSelect(msg.id, idx)}
+                              disabled={hasSelected || analyzing}
+                              style={{
+                                padding: "5px 12px", fontSize: 12, fontWeight: 500,
+                                background: isSelected ? t.accent : "transparent",
+                                color: isSelected ? "#FFF" : hasSelected ? t.textFaint : t.accent,
+                                border: `1.5px solid ${isSelected ? t.accent : hasSelected ? t.border : t.accent}`,
+                                borderRadius: 20, cursor: hasSelected || analyzing ? "default" : "pointer",
+                                fontFamily: "inherit", opacity: hasSelected && !isSelected ? 0.35 : 1, transition: "all 0.15s",
+                              }}
+                            >
+                              {opt}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              // ── user / assistant ──
+              const prev     = i > 0 ? messages[i - 1] : null;
+              const prevRole = prev?.role;
+              const gap      = prev && prevRole !== "separator" && prevRole !== "ask" && prevRole !== msg.role;
+              const isUser   = msg.role === "user";
+              const hasFeedback = !isUser && feedback.some(f => f.msgId === msg.id);
+              const panelOpen   = !isUser && feedbackPanelId === msg.id;
+
+              return (
+                <div key={msg.id} style={{ marginTop: gap ? 16 : 4, display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start" }}>
+                  <div style={{ position: "relative", maxWidth: "82%" }}>
+                    <div style={{
+                      padding: "10px 14px",
+                      paddingBottom: !isUser ? 22 : 10,
+                      borderRadius: isUser ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+                      background: isUser ? t.msgUser : t.msgBot,
+                      color: isUser ? t.msgUserText : t.msgBotText,
+                      border: `1px solid ${isUser ? t.msgUserBorder : t.msgBotBorder}`,
+                      fontFamily: isUser ? "inherit" : "'Besley', Georgia, serif",
+                      fontSize: 14, lineHeight: 1.5, whiteSpace: "pre-wrap",
+                    }}>
+                      {isUser && msg.chip && (
+                        <div style={{ fontSize: 11, fontWeight: 600, color: t.accent, background: `${t.accent}18`, borderRadius: 6, padding: "2px 8px", marginBottom: 6, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          ◉ {msg.chip.label}
+                        </div>
+                      )}
+                      {msg.text}
+                    </div>
+                    {!isUser && (
+                      <button
+                        onClick={() => {
+                          if (feedbackPanelId === msg.id) {
+                            setFeedbackPanelId(null); setFeedbackOtroMode(false); setFeedbackOtroText("");
+                          } else {
+                            setFeedbackPanelId(msg.id); setFeedbackOtroMode(false); setFeedbackOtroText("");
+                          }
+                        }}
+                        title="Dar feedback"
+                        style={{ position: "absolute", bottom: 5, right: 8, background: "transparent", border: "none", cursor: "pointer", fontSize: 11, color: hasFeedback ? t.accent : t.textFaint, padding: "2px 3px", lineHeight: 1, opacity: hasFeedback ? 1 : 0.6 }}
+                      >
+                        {hasFeedback ? "●" : "···"}
+                      </button>
+                    )}
+                  </div>
+
+                  {panelOpen && (
+                    <div style={{ maxWidth: "82%", marginTop: 4, background: t.bgCard, border: `1.5px solid ${t.border}`, borderRadius: 10, padding: "10px 12px" }}>
+                      {!feedbackOtroMode ? (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          {[
+                            { type: "should_have_asked",     label: "Debería haber preguntado" },
+                            { type: "wrong_classification",  label: "Clasificación incorrecta" },
+                            { type: "should_not_have_noted", label: "No debería haberlo anotado" },
+                            { type: "other",                 label: "Otro" },
+                          ].map(({ type, label }) => (
+                            <button
+                              key={type}
+                              onClick={() => { if (type === "other") setFeedbackOtroMode(true); else saveFeedback(msg, type, null); }}
+                              style={{ padding: "6px 12px", fontSize: 12, background: "transparent", border: `1px solid ${t.border}`, borderRadius: 16, color: t.textMid, cursor: "pointer", fontFamily: "inherit" }}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div>
+                          <textarea
+                            value={feedbackOtroText}
+                            onChange={e => setFeedbackOtroText(e.target.value)}
+                            placeholder="Describe qué ocurrió..."
+                            autoFocus
+                            style={{ width: "100%", padding: "8px 10px", fontSize: 13, background: t.bgInput, border: `1px solid ${t.border}`, borderRadius: 8, color: t.text, resize: "none", height: 72, fontFamily: "inherit", outline: "none" }}
+                          />
+                          <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                            <button onClick={() => saveFeedback(msg, "other", feedbackOtroText.trim() || null)} style={{ padding: "6px 16px", fontSize: 13, fontWeight: 600, background: t.accent, border: "none", borderRadius: 16, color: "#FFF", cursor: "pointer", fontFamily: "inherit" }}>Guardar</button>
+                            <button onClick={() => { setFeedbackOtroMode(false); setFeedbackOtroText(""); }} style={{ padding: "6px 12px", fontSize: 13, background: "transparent", border: `1px solid ${t.border}`, borderRadius: 16, color: t.textFaint, cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {analyzing && (
+              <div style={{ marginTop: 4, display: "flex", justifyContent: "flex-start" }}>
+                <div style={{ padding: "12px 16px", borderRadius: "18px 18px 18px 4px", background: t.msgBot, border: `1px solid ${t.msgBotBorder}` }}>
+                  <Dots t={t} />
+                </div>
+              </div>
+            )}
+
+            <div ref={bottomRef} />
+          </div>
+
+          {/* Composer */}
+          <div style={{ flexShrink: 0, borderTop: `1px solid ${t.navBorder}`, background: t.navBg }}>
+            {attachedChip && (
+              <div style={{ padding: "8px 16px 0", display: "flex" }}>
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: `${t.accent}18`, border: `1px solid ${t.accent}40`, borderRadius: 20, padding: "5px 10px 5px 12px" }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: t.accent }}>◉ {attachedChip.label}</span>
+                  <button onClick={clearChip} style={{ background: "transparent", border: "none", cursor: "pointer", color: t.textFaint, fontSize: 15, lineHeight: 1, padding: "0 0 0 4px" }}>×</button>
+                </div>
+              </div>
+            )}
+            <div style={{ padding: "10px 14px 20px", display: "flex", gap: 10, alignItems: "center" }}>
+              <input
+                ref={inputRef}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && !e.shiftKey && handleSend()}
+                placeholder="cuéntame..."
+                autoFocus
+                style={{ flex: 1, padding: "12px 16px", fontSize: 15, background: t.bgInput, border: `1.5px solid ${t.border}`, borderRadius: 24, color: t.text, outline: "none" }}
+              />
+              <button
+                onClick={handleSend}
+                disabled={analyzing || !input.trim()}
+                style={{ width: 44, height: 44, borderRadius: "50%", border: "none", cursor: "pointer", flexShrink: 0, background: input.trim() && !analyzing ? t.accent : t.border, color: "#FFF", fontSize: 20, display: "flex", alignItems: "center", justifyContent: "center", transition: "background 0.15s" }}
+              >
+                ↑
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ── REGISTRO SCREEN ───────────────────────────────────────
+    const FEEDBACK_LABELS = {
+      should_have_asked:     "Debería haber preguntado",
+      wrong_classification:  "Clasificación incorrecta",
+      should_not_have_noted: "No debería haberlo anotado",
+      other:                 "Otro",
+    };
+
+    function RegistroScreen({ feedback, observations, setObservations, t }) {
+      const [showNewObs, setShowNewObs] = useState(false);
+      const [obsText,    setObsText]    = useState("");
+      const [copied,     setCopied]     = useState(false);
+      const [exportText, setExportText] = useState("");
+
+      const formatTs = (iso) => {
+        const d = new Date(iso);
+        const today = new Date();
+        const isToday = d.toDateString() === today.toDateString();
+        const time = d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+        if (isToday) return `hoy ${time}`;
+        return `${d.toLocaleDateString("es-ES", { day: "numeric", month: "short" })} ${time}`;
+      };
+
+      // Merge and sort newest first
+      const allEntries = [
+        ...feedback.map(fb  => ({ ...fb,  _kind: "feedback" })),
+        ...observations.map(obs => ({ ...obs, _kind: "observation" })),
+      ].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+      const saveObs = () => {
+        const text = obsText.trim();
+        if (!text) return;
+        setObservations(prev => [...prev, { id: Date.now() + Math.random(), timestamp: new Date().toISOString(), text }]);
+        setObsText(""); setShowNewObs(false);
+      };
+
+      const buildExportText = () => {
+        return allEntries.map(entry => {
+          if (entry._kind === "feedback") {
+            const parts = [
+              `[${new Date(entry.timestamp).toLocaleString("es-ES")}]`,
+              `Tú escribiste: "${entry.userMessage}"`,
+              `La app respondió: "${entry.assistantMessage}"`,
+            ];
+            if (entry.itemCreated) {
+              const ip = [entry.itemCreated.label, entry.itemCreated.category];
+              if (entry.itemCreated.dateLabel) ip.push(entry.itemCreated.dateLabel);
+              else if (entry.itemCreated.deadlineLabel) ip.push(entry.itemCreated.deadlineLabel);
+              parts.push(`Anotó: ${ip.join(" · ")}`);
+            }
+            parts.push(`Feedback: ${FEEDBACK_LABELS[entry.feedbackType] || entry.feedbackType}`);
+            if (entry.note) parts.push(`Nota: "${entry.note}"`);
+            return parts.join("\n");
+          } else {
+            return `[${new Date(entry.timestamp).toLocaleString("es-ES")}] Observación libre\n${entry.text}`;
+          }
+        }).join("\n\n---\n\n");
+      };
+
+      const handleCopy = async () => {
+        const text = buildExportText();
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true); setTimeout(() => setCopied(false), 2000);
+        } catch {
+          setExportText(text);
+        }
+      };
+
+      const handleDownload = () => {
+        const text = buildExportText();
+        const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a");
+        a.href = url; a.download = `veritask-registro-${new Date().toISOString().split("T")[0]}.txt`;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a); URL.revokeObjectURL(url);
+      };
+
+      return (
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          <div style={{ padding: "20px 16px", maxWidth: 540, margin: "0 auto" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+              <span style={{ fontSize: 13, color: t.textFaint }}>{allEntries.length} {allEntries.length === 1 ? "entrada" : "entradas"}</span>
+              <button
+                onClick={() => setShowNewObs(true)}
+                style={{ padding: "7px 14px", fontSize: 13, fontWeight: 600, background: "transparent", border: `1.5px solid ${t.accent}`, borderRadius: 20, color: t.accent, cursor: "pointer", fontFamily: "inherit" }}
+              >
+                + Nueva observación
+              </button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 24 }}>
+              {allEntries.length === 0 && (
+                <p style={{ color: t.textFaint, fontSize: 14, textAlign: "center", padding: "32px 0", fontStyle: "italic" }}>sin entradas aún</p>
+              )}
+              {allEntries.map(entry => (
+                <div key={entry.id} style={{ background: t.bgCard, border: `1.5px solid ${t.border}`, borderRadius: 10, padding: "12px 14px", position: "relative" }}>
+                  {entry._kind === "observation" && (
+                    <span style={{ position: "absolute", top: 8, right: 10, fontSize: 10, color: t.accent, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>observación libre</span>
+                  )}
+                  <p style={{ fontSize: 11, color: t.textFaint, marginBottom: 8 }}>{formatTs(entry.timestamp)}</p>
+                  {entry._kind === "feedback" ? (
+                    <>
+                      <p style={{ fontSize: 13, color: t.textMid, marginBottom: 4, lineHeight: 1.4 }}>
+                        Tú escribiste: <span style={{ color: t.text }}>"{entry.userMessage}"</span>
+                      </p>
+                      <p style={{ fontSize: 13, color: t.textMid, marginBottom: 4, lineHeight: 1.4 }}>
+                        La app respondió: <span style={{ color: t.text }}>"{entry.assistantMessage}"</span>
+                      </p>
+                      {entry.itemCreated && (
+                        <p style={{ fontSize: 13, color: t.textMid, marginBottom: 4, lineHeight: 1.4 }}>
+                          Anotó: <span style={{ color: t.text }}>{entry.itemCreated.label}</span>
+                          <span style={{ color: t.textFaint }}> · {entry.itemCreated.category}{entry.itemCreated.dateLabel ? ` · ${entry.itemCreated.dateLabel}` : entry.itemCreated.deadlineLabel ? ` · ${entry.itemCreated.deadlineLabel}` : ""}</span>
+                        </p>
+                      )}
+                      <p style={{ fontSize: 13, color: t.accent, marginTop: 6, fontWeight: 600 }}>
+                        {FEEDBACK_LABELS[entry.feedbackType] || entry.feedbackType}
+                        {entry.note && <span style={{ color: t.textMid, fontWeight: 400 }}> — "{entry.note}"</span>}
+                      </p>
+                    </>
+                  ) : (
+                    <p style={{ fontSize: 14, color: t.text, lineHeight: 1.5, paddingRight: 90 }}>{entry.text}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {exportText ? (
+              <div>
+                <textarea
+                  readOnly value={exportText}
+                  onClick={e => e.target.select()}
+                  style={{ width: "100%", height: 180, padding: "10px 12px", fontSize: 12, background: t.bgInput, border: `1.5px solid ${t.border}`, borderRadius: 8, color: t.text, fontFamily: "monospace", resize: "vertical", outline: "none" }}
+                />
+                <p style={{ fontSize: 12, color: t.textFaint, marginTop: 6 }}>Toca el texto para seleccionarlo todo.</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button onClick={handleCopy} style={{ padding: "10px 20px", fontSize: 14, fontWeight: 600, background: copied ? t.accent : "transparent", border: `1.5px solid ${t.accent}`, borderRadius: 20, color: copied ? "#FFF" : t.accent, cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s" }}>
+                  {copied ? "Copiado ✓" : "Copiar"}
+                </button>
+                <button onClick={handleDownload} style={{ padding: "10px 20px", fontSize: 14, fontWeight: 600, background: t.accent, border: `1.5px solid ${t.accent}`, borderRadius: 20, color: "#FFF", cursor: "pointer", fontFamily: "inherit" }}>
+                  Descargar .txt
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Nueva observación — modal desde abajo */}
+          {showNewObs && (
+            <>
+              <div onClick={() => { setShowNewObs(false); setObsText(""); }} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.38)", zIndex: 200 }} />
+              <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 201, background: t.bgCard, borderRadius: "18px 18px 0 0", padding: "20px 20px 32px", boxShadow: "0 -4px 24px rgba(0,0,0,0.14)" }}>
+                <p style={{ fontSize: 15, fontWeight: 600, color: t.text, marginBottom: 12 }}>Nueva observación</p>
+                <textarea
+                  value={obsText}
+                  onChange={e => setObsText(e.target.value)}
+                  placeholder="Escribe lo que observaste..."
+                  autoFocus
+                  style={{ width: "100%", padding: "10px 12px", fontSize: 14, background: t.bgInput, border: `1.5px solid ${t.border}`, borderRadius: 10, color: t.text, resize: "none", height: 100, fontFamily: "inherit", outline: "none" }}
+                />
+                <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+                  <button onClick={saveObs} style={{ padding: "10px 20px", fontSize: 14, fontWeight: 600, background: t.accent, border: "none", borderRadius: 20, color: "#FFF", cursor: "pointer", fontFamily: "inherit" }}>Guardar</button>
+                  <button onClick={() => { setShowNewObs(false); setObsText(""); }} style={{ padding: "10px 16px", fontSize: 14, background: "transparent", border: `1px solid ${t.border}`, borderRadius: 20, color: t.textFaint, cursor: "pointer", fontFamily: "inherit" }}>Cancelar</button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    }
+
+    // ── LISTS SCREEN ──────────────────────────────────────────
+    const DAYS_ES = { monday: "lunes", tuesday: "martes", wednesday: "miércoles", thursday: "jueves", friday: "viernes", saturday: "sábado", sunday: "domingo" };
+
+    function ListsScreen({ items, t, restrictions, activeCategory, setActiveCategory, onAdvance, onRemove, onMarkDone, highlights, pinnedIds, onTogglePin, onEnviarAlChat }) {
+      const [contextMenu, setContextMenu] = useState(null); // { item }
+
+      const isHorarios = activeCategory === "horarios";
+      const active = isHorarios ? [] : items.filter(i => i.category === activeCategory && i.status !== "done");
+      const done   = isHorarios ? [] : items.filter(i => i.category === activeCategory && i.status === "done");
+
+      return (
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          <div style={{ padding: "20px 16px", maxWidth: 540, margin: "0 auto" }}>
+            {/* Tabs */}
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 20 }}>
+              {Object.entries(CATEGORIES).map(([key, { label, icon }]) => {
+                const count = items.filter(i => i.category === key && i.status !== "done").length;
+                const on = activeCategory === key;
+                return (
+                  <button key={key} onClick={() => setActiveCategory(key)} style={{ padding: "7px 14px", borderRadius: 20, border: `1.5px solid ${on ? t.accent : t.border}`, background: on ? t.accent : "transparent", color: on ? "#FFF" : t.textMid, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+                    <span style={{ fontSize: 11 }}>{icon}</span>{label}
+                    {count > 0 && <span style={{ background: on ? "rgba(255,255,255,0.3)" : t.accent, color: "#FFF", borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 700 }}>{count}</span>}
+                  </button>
+                );
+              })}
+              <button onClick={() => setActiveCategory("horarios")} style={{ padding: "7px 14px", borderRadius: 20, border: `1.5px solid ${activeCategory === "horarios" ? t.accent : t.border}`, background: activeCategory === "horarios" ? t.accent : "transparent", color: activeCategory === "horarios" ? "#FFF" : t.textMid, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+                <span style={{ fontSize: 11 }}>◈</span>Horarios
+                {restrictions?.length > 0 && <span style={{ background: activeCategory === "horarios" ? "rgba(255,255,255,0.3)" : t.accent, color: "#FFF", borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 700 }}>{restrictions.length}</span>}
+              </button>
+            </div>
+
+            {/* Horarios view */}
+            {isHorarios ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {(!restrictions || restrictions.length === 0) && (
+                  <p style={{ color: t.textFaint, fontSize: 14, textAlign: "center", padding: "32px 0", fontStyle: "italic" }}>sin horarios registrados</p>
+                )}
+                {(restrictions || []).map((r, idx) => (
+                  <div key={idx} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "11px 14px", background: t.bgCard, borderRadius: 8, border: `1.5px solid ${t.border}`, marginBottom: 2 }}>
+                    <span style={{ fontSize: 16, marginTop: 1, flexShrink: 0, color: t.accent }}>◈</span>
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontSize: 14, fontWeight: 500, color: t.text, lineHeight: 1.4 }}>{r.label}</span>
+                      <div style={{ fontSize: 12, color: t.textFaint, marginTop: 3 }}>
+                        {r.days?.map(d => DAYS_ES[d] || d).join(", ")}
+                        {r.startTime && r.endTime && ` · ${r.startTime}–${r.endTime}`}
+                        {!r.confirmed && <span style={{ marginLeft: 6, fontStyle: "italic" }}>inferido</span>}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <p style={{ fontSize: 12, color: t.textFaint, marginTop: 16, textAlign: "center" }}>Para eliminar un horario, dímelo por el chat.</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {active.length === 0 && done.length === 0 && (
+                  <p style={{ color: t.textFaint, fontSize: 14, textAlign: "center", padding: "32px 0", fontStyle: "italic" }}>vacío</p>
+                )}
+                {active.map(item => (
+                  <ItemRow
+                    key={item.id} item={item} t={t}
+                    onAdvance={onAdvance} onRemove={onRemove}
+                    highlighted={highlights.some(h => normalize(h) === normalize(item.label))}
+                    isPinned={pinnedIds.includes(item.id)}
+                    onLongPress={(pos) => setContextMenu({ item, pos })}
+                  />
+                ))}
+                {done.length > 0 && (
+                  <div style={{ marginTop: 24 }}>
+                    <p style={{ fontSize: 12, color: t.textFaint, marginBottom: 8 }}>completadas · {done.length}</p>
+                    {done.map(item => (
+                      <ItemRow
+                        key={item.id} item={item} t={t}
+                        onAdvance={onAdvance} onRemove={onRemove}
+                        highlighted={false} isPinned={false}
+                        onLongPress={(pos) => setContextMenu({ item, pos })}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Context menu */}
+          {contextMenu && (
+            <ContextMenu
+              item={contextMenu.item}
+              t={t}
+              pos={contextMenu.pos}
+              onClose={() => setContextMenu(null)}
+              options={[
+                { label: "Completada", action: () => onMarkDone(contextMenu.item.id) },
+                {
+                  label: pinnedIds.includes(contextMenu.item.id) ? "Desfijar tarea" : "Fijar tarea",
+                  action: () => onTogglePin(contextMenu.item.id),
+                },
+                { label: "Enviar al chat", action: () => onEnviarAlChat(contextMenu.item) },
+                { label: "Ahora no", action: () => {
+                  // Soft postpone: remove date without marking done
+                  // Actual implementation would call the model; for now, clear the date client-side
+                } },
+                { label: "Eliminar", danger: true, action: () => onRemove(contextMenu.item.id) },
+              ]}
+            />
+          )}
+        </div>
+      );
+    }
+
+    // ── ITEM ROW ──────────────────────────────────────────────
+    function ItemRow({ item, t, onAdvance, onRemove, highlighted, isPinned, onLongPress }) {
+      const lp   = useLongPress(onLongPress);
+      const done   = item.status === "done";
+      const active = item.status === "doing";
+      const days   = getDaysUntil(item.datetime || item.deadline);
+      const urgent = days !== null && days >= 0 && days <= 1 && !done;
+
+      return (
+        <div
+          {...lp}
+          style={{
+            display: "flex", alignItems: "center", gap: 12, padding: "11px 14px",
+            background: isPinned ? `${t.pinned}28` : highlighted ? `${t.accent}15` : t.bgCard,
+            borderRadius: 8,
+            border: `1.5px solid ${isPinned ? t.pinned : highlighted ? t.accent : urgent ? "#F0C060" : active ? `${t.accent}66` : t.border}`,
+            marginBottom: 2, transition: "all 0.15s", userSelect: "none",
+          }}
+        >
+          <button
+            onMouseDown={e => e.stopPropagation()}
+            onTouchStart={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); onAdvance(item.id); }}
+            style={{ width: 26, height: 26, borderRadius: "50%", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, background: done ? t.accent : active ? `${t.accent}33` : t.bgInput, color: done ? "#FFF" : active ? t.accent : t.textFaint, transition: "all 0.15s" }}
+          >
+            {done ? "✓" : active ? "→" : "○"}
+          </button>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 500, color: done ? t.textFaint : t.text, textDecoration: done ? "line-through" : "none", lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {item.label || item.text}
+            </div>
+            {(item.dateLabel || item.deadlineLabel || item.recurrence) && !done && (
+              <div style={{ fontSize: 12, color: urgent ? "#F0A020" : t.textFaint, marginTop: 2 }}>
+                {item.dateLabel || item.deadlineLabel || item.recurrence}
+              </div>
+            )}
+          </div>
+          {isPinned && !done && <span style={{ fontSize: 13, color: t.pinned, flexShrink: 0 }}>📌</span>}
+          {active && !done && <span style={{ fontSize: 11, padding: "2px 8px", background: `${t.accent}22`, color: t.accent, borderRadius: 10, fontWeight: 600, flexShrink: 0 }}>en curso</span>}
+          {urgent && !done && <span style={{ fontSize: 11, padding: "2px 8px", background: "#F0C06022", color: "#A07000", borderRadius: 10, flexShrink: 0 }}>⏰</span>}
+          <button
+            onMouseDown={e => e.stopPropagation()}
+            onTouchStart={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); onRemove(item.id); }}
+            style={{ background: "transparent", border: "none", color: t.textFaint, fontSize: 18, cursor: "pointer", padding: "0 2px", lineHeight: 1, flexShrink: 0 }}
+          >
+            ×
+          </button>
+        </div>
+      );
+    }
+
+    // ── NAV BTN ───────────────────────────────────────────────
+    function NavBtn({ label, active, onClick, t }) {
+      return (
+        <button
+          onClick={onClick}
+          style={{ padding: "5px 10px", borderRadius: 0, border: "none", borderBottom: active ? `2px solid ${t.accent}` : "2px solid transparent", cursor: "pointer", fontSize: 13, fontWeight: 600, background: "transparent", color: active ? t.text : t.textMid, fontFamily: "inherit", transition: "color 0.15s" }}
+        >
+          {label}
+        </button>
+      );
+    }
+
+    // ── DOTS ──────────────────────────────────────────────────
+    function Dots({ t }) {
+      return (
+        <span style={{ display: "inline-flex", gap: 4 }}>
+          {[0, 0.2, 0.4].map((d, i) => (
+            <span key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: t.textFaint, display: "inline-block", animation: `blink 1.2s ${d}s infinite` }} />
+          ))}
+        </span>
+      );
+    }
+
+    // ── RENDER ────────────────────────────────────────────────
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
