@@ -781,7 +781,7 @@ ${existing || "(nada)"}${historyStr}`;
       }, []);
 
       const pushMessage = useCallback((role, text) => {
-        setMessages(prev => [...prev, { id: Date.now() + Math.random(), role, text }]);
+        setMessages(prev => [...prev, { id: Date.now() + Math.random(), role, text, createdAt: new Date().toISOString() }]);
       }, []);
 
       const advance = useCallback((id) => setItems(prev => prev.map(i => {
@@ -909,6 +909,7 @@ ${existing || "(nada)"}${historyStr}`;
                   feedback={feedback}
                   observations={observations}
                   setObservations={setObservations}
+                  messages={messages}
                   t={t}
                 />
             }
@@ -1136,7 +1137,7 @@ ${existing || "(nada)"}${historyStr}`;
         setInput("");
 
         const msgId = Date.now() + Math.random();
-        setMessages(prev => [...prev, { id: msgId, role: "user", text, chip: chip || null }]);
+        setMessages(prev => [...prev, { id: msgId, role: "user", text, chip: chip || null, createdAt: new Date().toISOString() }]);
 
         setAnalyzing(true);
         try {
@@ -1338,13 +1339,14 @@ ${existing || "(nada)"}${historyStr}`;
 
     // ── REGISTRO SCREEN ───────────────────────────────────────
     const FEEDBACK_LABELS = {
+      good_response:         "✓ Buena respuesta",
       should_have_asked:     "Debería haber preguntado",
       wrong_classification:  "Clasificación incorrecta",
       should_not_have_noted: "No debería haberlo anotado",
       other:                 "Otro",
     };
 
-    function RegistroScreen({ feedback, observations, setObservations, t }) {
+    function RegistroScreen({ feedback, observations, setObservations, messages, t }) {
       const [showNewObs, setShowNewObs] = useState(false);
       const [obsText,    setObsText]    = useState("");
       const [copied,     setCopied]     = useState(false);
@@ -1373,26 +1375,45 @@ ${existing || "(nada)"}${historyStr}`;
       };
 
       const buildExportText = () => {
-        return allEntries.map(entry => {
-          if (entry._kind === "feedback") {
-            const parts = [
-              `[${new Date(entry.timestamp).toLocaleString("es-ES")}]`,
-              `Tú escribiste: "${entry.userMessage}"`,
-              `La app respondió: "${entry.assistantMessage}"`,
-            ];
-            if (entry.itemCreated) {
-              const ip = [entry.itemCreated.label, entry.itemCreated.category];
-              if (entry.itemCreated.dateLabel) ip.push(entry.itemCreated.dateLabel);
-              else if (entry.itemCreated.deadlineLabel) ip.push(entry.itemCreated.deadlineLabel);
-              parts.push(`Anotó: ${ip.join(" · ")}`);
-            }
-            parts.push(`Feedback: ${FEEDBACK_LABELS[entry.feedbackType] || entry.feedbackType}`);
-            if (entry.note) parts.push(`Nota: "${entry.note}"`);
-            return parts.join("\n");
-          } else {
-            return `[${new Date(entry.timestamp).toLocaleString("es-ES")}] Observación libre\n${entry.text}`;
+        const entries = [];
+
+        // Mensajes de conversación
+        messages.forEach(msg => {
+          if (msg.role === "user" || msg.role === "assistant") {
+            entries.push({
+              ts: msg.createdAt || new Date().toISOString(),
+              text: `[${msg.role === "user" ? "Tú" : "Veritask"}] ${msg.text}`
+            });
           }
-        }).join("\n\n---\n\n");
+        });
+
+        // Entradas de feedback
+        feedback.forEach(fb => {
+          const label = FEEDBACK_LABELS[fb.feedbackType] || fb.feedbackType;
+          let text = `[Feedback] ${label}`;
+          if (fb.note) text += ` — "${fb.note}"`;
+          if (fb.itemCreated) {
+            const ip = [fb.itemCreated.label, fb.itemCreated.category];
+            if (fb.itemCreated.dateLabel) ip.push(fb.itemCreated.dateLabel);
+            text += `\n  Anotó: ${ip.join(" · ")}`;
+          }
+          entries.push({ ts: fb.timestamp, text });
+        });
+
+        // Observaciones libres
+        observations.forEach(obs => {
+          entries.push({ ts: obs.timestamp, text: `[Observación] ${obs.text}` });
+        });
+
+        // Ordenar cronológicamente
+        entries.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+        return entries.map(e => {
+          const d = new Date(e.ts);
+          const fecha = d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" });
+          const hora = d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+          return `[${fecha} ${hora}] ${e.text}`;
+        }).join("\n");
       };
 
       const handleCopy = async () => {
