@@ -18,7 +18,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body, #root { height: 100%; }
+    html, body, #root { height: 100%; height: 100dvh; }
     body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; }
   </style>
 </head>
@@ -543,7 +543,7 @@ ${existing || "(nada)"}${historyStr}`;
               value={key}
               onChange={e => setKey(e.target.value)}
               onKeyDown={e => e.key === "Enter" && handleSave()}
-              placeholder="sk-ant-..."
+              placeholder="sk-ant-..." autoComplete="off"
               type="password"
               style={{ width: "100%", padding: "12px 16px", fontSize: 14, background: LIGHT.bgInput, border: `1.5px solid ${error ? "#E05050" : LIGHT.border}`, borderRadius: 12, color: LIGHT.text, outline: "none", fontFamily: "monospace", marginBottom: 8 }}
             />
@@ -845,7 +845,7 @@ ${existing || "(nada)"}${historyStr}`;
           `}</style>
 
           {/* ── NAV ── */}
-          <nav style={{ flexShrink: 0, background: t.navBg, borderBottom: `1px solid ${t.navBorder}`, padding: "0 14px", zIndex: 10 }}>
+          <nav style={{ flexShrink: 0, background: t.navBg, borderBottom: `1px solid ${t.navBorder}`, padding: "0 14px", zIndex: 10, position: "sticky", top: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 4, height: 52 }}>
               <span style={{ fontSize: 17, fontWeight: 500, fontFamily: "Besley, Georgia, serif", fontStyle: "italic", color: t.text, marginRight: 6 }}>Veritask</span>
               <NavBtn label="Chat"   active={screen === "home"}    onClick={() => { setScreen("home"); setHighlights([]); }} t={t} />
@@ -904,6 +904,7 @@ ${existing || "(nada)"}${historyStr}`;
                   highlights={highlights}
                   pinnedIds={pinnedIds} onTogglePin={togglePin}
                   onEnviarAlChat={(item) => { setAttachedChip(item); setScreen("home"); }}
+                  onAhoraNo={ahoraNo}
                 />
               : <RegistroScreen
                   feedback={feedback}
@@ -1321,7 +1322,7 @@ ${existing || "(nada)"}${historyStr}`;
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && !e.shiftKey && handleSend()}
-                placeholder="cuéntame..."
+                placeholder="cuéntame..." autoComplete="off"
                 autoFocus
                 style={{ flex: 1, padding: "12px 16px", fontSize: 15, background: t.bgInput, border: `1.5px solid ${t.border}`, borderRadius: 24, color: t.text, outline: "none" }}
               />
@@ -1534,7 +1535,7 @@ ${existing || "(nada)"}${historyStr}`;
     // ── LISTS SCREEN ──────────────────────────────────────────
     const DAYS_ES = { monday: "lunes", tuesday: "martes", wednesday: "miércoles", thursday: "jueves", friday: "viernes", saturday: "sábado", sunday: "domingo" };
 
-    function ListsScreen({ items, t, restrictions, activeCategory, setActiveCategory, onAdvance, onRemove, onMarkDone, highlights, pinnedIds, onTogglePin, onEnviarAlChat }) {
+    function ListsScreen({ items, t, restrictions, activeCategory, setActiveCategory, onAdvance, onRemove, onMarkDone, highlights, pinnedIds, onTogglePin, onEnviarAlChat, onAhoraNo }) {
       const [contextMenu, setContextMenu] = useState(null); // { item }
 
       const isHorarios = activeCategory === "horarios";
@@ -1628,10 +1629,7 @@ ${existing || "(nada)"}${historyStr}`;
                   action: () => onTogglePin(contextMenu.item.id),
                 },
                 { label: "Enviar al chat", action: () => onEnviarAlChat(contextMenu.item) },
-                { label: "Ahora no", action: () => {
-                  // Soft postpone: remove date without marking done
-                  // Actual implementation would call the model; for now, clear the date client-side
-                } },
+                { label: "Ahora no", action: () => onAhoraNo(contextMenu.item.id) },
                 { label: "Eliminar", danger: true, action: () => onRemove(contextMenu.item.id) },
               ]}
             />
