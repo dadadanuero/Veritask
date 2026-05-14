@@ -543,9 +543,9 @@ ${existing || "(nada)"}${historyStr}`;
               value={key}
               onChange={e => setKey(e.target.value)}
               onKeyDown={e => e.key === "Enter" && handleSave()}
-              placeholder="sk-ant-..." autoComplete="new-password"
-              type="password"
-              style={{ width: "100%", padding: "12px 16px", fontSize: 14, background: LIGHT.bgInput, border: `1.5px solid ${error ? "#E05050" : LIGHT.border}`, borderRadius: 12, color: LIGHT.text, outline: "none", fontFamily: "monospace", marginBottom: 8 }}
+              placeholder="sk-ant-..." autoCorrect="off" autoCapitalize="off" spellCheck="false" inputMode="text" name="api-key" id="api-key" autoComplete="off"
+              type="text"
+              style={{ width: "100%", padding: "12px 16px", fontSize: 14, background: LIGHT.bgInput, border: `1.5px solid ${error ? "#E05050" : LIGHT.border}`, borderRadius: 12, color: LIGHT.text, outline: "none", fontFamily: "monospace", marginBottom: 8, WebkitTextSecurity: "disc", textSecurity: "disc" }}
             />
             {error && <p style={{ fontSize: 13, color: "#E05050", marginBottom: 12 }}>{error}</p>}
             <button
