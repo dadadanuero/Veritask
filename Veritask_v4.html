@@ -35,7 +35,6 @@
     const STORAGE_RESTRICTIONS = "veritask-restrictions-v1";
     const STORAGE_MOTOR        = "veritask-onboarding-v2";
     const STORAGE_FEEDBACK     = "veritask-feedback-v1";
-    const STORAGE_APIKEY       = "veritask-apikey";
     const STORAGE_PINNED       = "veritask-pinned-v1";
     const STORAGE_OBSERVATIONS = "veritask-observations-v1";
 
@@ -43,15 +42,11 @@
     const SUPABASE_URL = "https://wvqzqxoolcshjftigvku.supabase.co";
     const SUPABASE_KEY = "sb_publishable_Gp1ayLpauT_G_R-VANXjug_huIVlhFX";
 
-    function getDeviceId() {
-      let id = localStorage.getItem("veritask-device-id");
-      if (!id) {
-        id = "dev_" + Math.random().toString(36).substr(2, 9) + "_" + Date.now().toString(36);
-        localStorage.setItem("veritask-device-id", id);
-      }
-      return id;
-    }
-    const DEVICE_ID = getDeviceId();
+    const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    // Sesión activa (se actualiza desde onAuthStateChange)
+    let _currentUserId      = null;
+    let _currentAccessToken = null;
 
     let _stateCache = {};
     let _saveTimer = null;
@@ -59,28 +54,34 @@
 
     async function _saveToSupabase() {
       if (!_storageReady) return;
+      if (!_currentUserId || !_currentAccessToken) return;
       try {
         await fetch(`${SUPABASE_URL}/rest/v1/veritask_state`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "apikey": SUPABASE_KEY,
-            "Authorization": `Bearer ${SUPABASE_KEY}`,
+            "Authorization": `Bearer ${_currentAccessToken}`,
             "Prefer": "resolution=merge-duplicates"
           },
-          body: JSON.stringify({ device_id: DEVICE_ID, state: _stateCache, updated_at: new Date().toISOString() })
+          body: JSON.stringify({ user_id: _currentUserId, state: _stateCache, updated_at: new Date().toISOString() })
         });
       } catch (_) {}
     }
 
-    async function initStorage() {
+    async function initStorage(userId, accessToken) {
+      _currentUserId      = userId;
+      _currentAccessToken = accessToken;
+      _stateCache         = {};
+      _storageReady       = false;
+
       const ALL_KEYS = [STORAGE_ITEMS, STORAGE_MESSAGES, STORAGE_PREFS, STORAGE_PROFILE,
-        STORAGE_RESTRICTIONS, STORAGE_MOTOR, STORAGE_FEEDBACK, STORAGE_APIKEY,
+        STORAGE_RESTRICTIONS, STORAGE_MOTOR, STORAGE_FEEDBACK,
         STORAGE_PINNED, STORAGE_OBSERVATIONS];
       try {
         const res = await fetch(
-          `${SUPABASE_URL}/rest/v1/veritask_state?device_id=eq.${DEVICE_ID}&select=state`,
-          { headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` } }
+          `${SUPABASE_URL}/rest/v1/veritask_state?user_id=eq.${userId}&select=state`,
+          { headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${accessToken}` } }
         );
         const data = await res.json();
         if (data && data[0]?.state && Object.keys(data[0].state).length > 0) {
@@ -96,6 +97,20 @@
         }
       }
       _storageReady = true;
+    }
+
+    function clearStorageOnLogout() {
+      const VERITASK_KEYS = [STORAGE_ITEMS, STORAGE_MESSAGES, STORAGE_PREFS, STORAGE_PROFILE,
+        STORAGE_RESTRICTIONS, STORAGE_MOTOR, STORAGE_FEEDBACK,
+        STORAGE_PINNED, STORAGE_OBSERVATIONS];
+      for (const k of VERITASK_KEYS) {
+        try { localStorage.removeItem(k); } catch (_) {}
+      }
+      _stateCache         = {};
+      _storageReady       = false;
+      _currentUserId      = null;
+      _currentAccessToken = null;
+      if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
     }
 
     // ── CATEGORIES ───────────────────────────────────────────
@@ -337,6 +352,7 @@ Después de gestionar lo que el usuario pidió, evalúa si el perfil tiene hueco
 Las preguntas de descubrimiento sobre horarios o compromisos deben ser siempre abiertas — nunca de Sí/No. No preguntes si el usuario tiene algo; pregunta directamente qué tiene. Se añaden como campo discoveryQuestion en la misma respuesta que gestiona lo que el usuario pidió — no como un type: ask separado. Ese tipo se reserva exclusivamente para ambigüedades de clasificación y conflictos de horario. Si hay opciones concretas, inclúyelas en options. Si no las hay, omite el array de opciones para que el usuario responda libremente.
 
 CONSULTAS Y ACCIONES:
+Si el mensaje del usuario parece una corrección o aclaración de lo que acaba de decir — expresiones como 'esto es para', 'me refería a', 'quiero decir', 'no, que sea', o cualquier reformulación que ajuste algo ya dicho — interpreta siempre como corrección del último item registrado, no como un item nuevo. Nunca crees un item cuyo label sea literalmente la frase de corrección del usuario.
 Si el mensaje anterior en el historial es una pregunta de descubrimiento de Veritask — reconocible porque empieza por "—" — interpreta la entrada del usuario como respuesta a esa pregunta y procésala como información de perfil antes de hacer cualquier otra cosa. Si la respuesta contiene información concreta sobre horarios o compromisos, regístrala. Si la respuesta es afirmativa pero sin detalle, responde con una pregunta abierta pidiendo los detalles.
 Si el mensaje anterior en el historial es una intervención proactiva del motor, interpreta la entrada del usuario como respuesta a esa intervención antes de hacer cualquier otra cosa. Si el usuario pregunta por sus pendientes, responde directamente — primero lo atrasado o urgente, luego el resto, máximo 4-5 items, solo items con estado pendiente o en progreso. Si el usuario indica que completó algo ("ya hice X", "ya llamé", "listo", "hecho"), busca el item en la lista de pendientes por similitud de label y devuelve siempre type: action con do: update_item, el itemId correcto, y changes: { status: "done" }. Nunca uses type: context para marcar algo como hecho. Si menciona varios, usa do: update_items con array de itemIds. Si el usuario quiere modificar, mover o cancelar algo, ejecuta la acción que indica.
 
@@ -344,7 +360,7 @@ FORMATO DE RESPUESTA:
 Devuelve siempre JSON válido. Sin markdown. Sin texto fuera del JSON.
 
 classify: { "type": "classify", "category": "", "label": "", "datetime": null, "dateLabel": null, "deadline": null, "deadlineLabel": null, "recurrence": null, "message": "" }
-El campo message en classify es obligatorio. Debe ser una confirmación breve y natural de lo que se anotó. Sin mencionar categorías internas.
+El campo message en classify es obligatorio. Debe ser una confirmación breve y natural que incluya dónde se guardó — por ejemplo "Anotado en compras." o "En tu lista de ideas." — usando el nombre de la categoría de forma natural, no como etiqueta técnica.
 multi: { "type": "multi", "items": [ { "category": "", "label": "" } ] }
 ask: { "type": "ask", "question": "", "options": [], "pendingItem": { "label": "", "category": "" } }
 El tipo ask es OBLIGATORIO en estos casos:
@@ -488,11 +504,154 @@ ${existing || "(nada)"}${historyStr}`;
       };
     }
 
-    // ── SETUP SCREEN ──────────────────────────────────────────
-    function SetupScreen({ onSave }) {
-      const [key,     setKey]     = useState("");
-      const [error,   setError]   = useState("");
-      const [testing, setTesting] = useState(false);
+    // ── AUTH SCREEN ───────────────────────────────────────────
+    function AuthScreen() {
+      const [mode,     setMode]     = useState("login"); // "login" | "signup"
+      const [email,    setEmail]    = useState("");
+      const [password, setPassword] = useState("");
+      const [apiKey,   setApiKey]   = useState("");
+      const [error,    setError]    = useState("");
+      const [busy,     setBusy]     = useState(false);
+
+      const validateApiKey = async (key) => {
+        const res = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true",
+          },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-6",
+            max_tokens: 10,
+            messages: [{ role: "user", content: "ok" }],
+          }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error.message || "API key inválida");
+      };
+
+      const handleSubmit = async () => {
+        setError("");
+        const e = email.trim();
+        const p = password;
+        if (!e || !p) { setError("Email y contraseña son obligatorios."); return; }
+
+        setBusy(true);
+        try {
+          if (mode === "signup") {
+            const k = apiKey.trim();
+            if (!k.startsWith("sk-ant-")) {
+              setError("La API key debe empezar por sk-ant-");
+              setBusy(false);
+              return;
+            }
+            try {
+              await validateApiKey(k);
+            } catch (err) {
+              setError("API key inválida o sin créditos: " + err.message);
+              setBusy(false);
+              return;
+            }
+            const { error: signUpErr } = await sb.auth.signUp({
+              email: e,
+              password: p,
+              options: { data: { anthropic_api_key: k } }
+            });
+            if (signUpErr) { setError(signUpErr.message); setBusy(false); return; }
+            // onAuthStateChange en App() se encarga del resto.
+          } else {
+            const { error: signInErr } = await sb.auth.signInWithPassword({ email: e, password: p });
+            if (signInErr) { setError(signInErr.message); setBusy(false); return; }
+          }
+        } catch (err) {
+          setError(err.message || "Error desconocido");
+          setBusy(false);
+        }
+      };
+
+      const handleGoogle = async () => {
+        setError("");
+        setBusy(true);
+        const { error: oauthErr } = await sb.auth.signInWithOAuth({
+          provider: "google",
+          options: { redirectTo: "https://dadadanuero.github.io/Veritask/Veritask_v4.html" }
+        });
+        if (oauthErr) { setError(oauthErr.message); setBusy(false); }
+      };
+
+      const inputStyle = {
+        width: "100%", padding: "12px 16px", fontSize: 14,
+        background: LIGHT.bgInput, border: `1.5px solid ${LIGHT.border}`,
+        borderRadius: 12, color: LIGHT.text, outline: "none",
+        fontFamily: "inherit", marginBottom: 10,
+      };
+
+      return (
+        <div style={{ height: "100%", background: LIGHT.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ maxWidth: 400, width: "100%" }}>
+            <h1 style={{ fontSize: 22, fontWeight: 500, fontFamily: "Besley, Georgia, serif", fontStyle: "italic", color: LIGHT.text, marginBottom: 8 }}>Veritask</h1>
+            <p style={{ fontSize: 14, color: LIGHT.textMid, marginBottom: 20, lineHeight: 1.6 }}>
+              {mode === "login" ? "Inicia sesión para continuar." : "Crea una cuenta para empezar."}
+            </p>
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              <button
+                onClick={() => { setMode("login"); setError(""); }}
+                style={{ flex: 1, padding: "10px", fontSize: 14, fontWeight: 500, background: mode === "login" ? LIGHT.accent : "transparent", color: mode === "login" ? "#FFF" : LIGHT.textMid, border: `1px solid ${mode === "login" ? LIGHT.accent : LIGHT.border}`, borderRadius: 10, cursor: "pointer", fontFamily: "inherit" }}
+              >Iniciar sesión</button>
+              <button
+                onClick={() => { setMode("signup"); setError(""); }}
+                style={{ flex: 1, padding: "10px", fontSize: 14, fontWeight: 500, background: mode === "signup" ? LIGHT.accent : "transparent", color: mode === "signup" ? "#FFF" : LIGHT.textMid, border: `1px solid ${mode === "signup" ? LIGHT.accent : LIGHT.border}`, borderRadius: 10, cursor: "pointer", fontFamily: "inherit" }}
+              >Registrarse</button>
+            </div>
+
+            <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" type="email" autoComplete="email" style={inputStyle} />
+            <input value={password} onChange={e => setPassword(e.target.value)} placeholder="Contraseña" type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} style={inputStyle} />
+
+            {mode === "signup" && (
+              <>
+                <p style={{ fontSize: 12, color: LIGHT.textMid, marginBottom: 6, lineHeight: 1.5 }}>
+                  API key de Anthropic (consíguela en console.anthropic.com):
+                </p>
+                <input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="sk-ant-..." type="text" autoCorrect="off" autoCapitalize="off" spellCheck="false" autoComplete="off" style={{ ...inputStyle, fontFamily: "monospace", WebkitTextSecurity: "disc", textSecurity: "disc" }} />
+              </>
+            )}
+
+            {error && <p style={{ fontSize: 13, color: "#E05050", marginBottom: 12 }}>{error}</p>}
+
+            <button
+              onClick={handleSubmit}
+              disabled={busy}
+              style={{ width: "100%", padding: "12px", fontSize: 15, fontWeight: 600, background: busy ? LIGHT.border : LIGHT.accent, border: "none", borderRadius: 12, color: "#FFF", cursor: busy ? "default" : "pointer", fontFamily: "inherit", marginBottom: 10 }}
+            >
+              {busy ? "..." : (mode === "login" ? "Iniciar sesión" : "Crear cuenta")}
+            </button>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "14px 0" }}>
+              <div style={{ flex: 1, height: 1, background: LIGHT.border }} />
+              <span style={{ fontSize: 12, color: LIGHT.textFaint }}>o</span>
+              <div style={{ flex: 1, height: 1, background: LIGHT.border }} />
+            </div>
+
+            <button
+              onClick={handleGoogle}
+              disabled={busy}
+              style={{ width: "100%", padding: "12px", fontSize: 15, fontWeight: 500, background: "transparent", border: `1.5px solid ${LIGHT.border}`, borderRadius: 12, color: LIGHT.text, cursor: busy ? "default" : "pointer", fontFamily: "inherit" }}
+            >
+              Continuar con Google
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── API KEY PROMPT ────────────────────────────────────────
+    function ApiKeyPrompt({ onSaved }) {
+      const [key,   setKey]   = useState("");
+      const [error, setError] = useState("");
+      const [busy,  setBusy]  = useState(false);
 
       const handleSave = async () => {
         const trimmed = key.trim();
@@ -500,7 +659,7 @@ ${existing || "(nada)"}${historyStr}`;
           setError("La API key debe empezar por sk-ant-");
           return;
         }
-        setTesting(true);
+        setBusy(true);
         setError("");
         try {
           const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -520,14 +679,21 @@ ${existing || "(nada)"}${historyStr}`;
           const data = await res.json();
           if (data.error) {
             setError("API key inválida o sin créditos: " + (data.error.message || ""));
-            setTesting(false);
+            setBusy(false);
             return;
           }
-          await storageSet(STORAGE_APIKEY, trimmed);
-          onSave(trimmed);
+          const { error: updateErr } = await sb.auth.updateUser({
+            data: { anthropic_api_key: trimmed }
+          });
+          if (updateErr) {
+            setError("No se pudo guardar: " + updateErr.message);
+            setBusy(false);
+            return;
+          }
+          onSaved(trimmed);
         } catch (e) {
           setError("No se pudo conectar. Comprueba tu conexión.");
-          setTesting(false);
+          setBusy(false);
         }
       };
 
@@ -537,23 +703,23 @@ ${existing || "(nada)"}${historyStr}`;
             <h1 style={{ fontSize: 22, fontWeight: 500, fontFamily: "Besley, Georgia, serif", fontStyle: "italic", color: LIGHT.text, marginBottom: 8 }}>Veritask</h1>
             <p style={{ fontSize: 14, color: LIGHT.textMid, marginBottom: 32, lineHeight: 1.6 }}>
               Para funcionar necesita una API key de Anthropic. Consíguela en{" "}
-              <span style={{ color: LIGHT.accent }}>console.anthropic.com</span> y pégala aquí. Se guarda solo en este dispositivo.
+              <span style={{ color: LIGHT.accent }}>console.anthropic.com</span> y pégala aquí.
             </p>
             <input
               value={key}
               onChange={e => setKey(e.target.value)}
               onKeyDown={e => e.key === "Enter" && handleSave()}
-              placeholder="sk-ant-..." autoCorrect="off" autoCapitalize="off" spellCheck="false" inputMode="text" name="api-key" id="api-key" autoComplete="off"
+              placeholder="sk-ant-..." autoCorrect="off" autoCapitalize="off" spellCheck="false" inputMode="text" autoComplete="off"
               type="text"
               style={{ width: "100%", padding: "12px 16px", fontSize: 14, background: LIGHT.bgInput, border: `1.5px solid ${error ? "#E05050" : LIGHT.border}`, borderRadius: 12, color: LIGHT.text, outline: "none", fontFamily: "monospace", marginBottom: 8, WebkitTextSecurity: "disc", textSecurity: "disc" }}
             />
             {error && <p style={{ fontSize: 13, color: "#E05050", marginBottom: 12 }}>{error}</p>}
             <button
               onClick={handleSave}
-              disabled={testing || !key.trim()}
-              style={{ width: "100%", padding: "12px", fontSize: 15, fontWeight: 600, background: testing || !key.trim() ? LIGHT.border : LIGHT.accent, border: "none", borderRadius: 12, color: "#FFF", cursor: testing || !key.trim() ? "default" : "pointer", fontFamily: "inherit", transition: "background 0.15s" }}
+              disabled={busy || !key.trim()}
+              style={{ width: "100%", padding: "12px", fontSize: 15, fontWeight: 600, background: busy || !key.trim() ? LIGHT.border : LIGHT.accent, border: "none", borderRadius: 12, color: "#FFF", cursor: busy || !key.trim() ? "default" : "pointer", fontFamily: "inherit" }}
             >
-              {testing ? "Verificando..." : "Guardar y continuar"}
+              {busy ? "Verificando..." : "Guardar y continuar"}
             </button>
           </div>
         </div>
@@ -709,17 +875,53 @@ ${existing || "(nada)"}${historyStr}`;
       const [motorState,     setMotorState]     = useState(null);
       const [feedback,       setFeedback]       = useState([]);
       const [observations,   setObservations]   = useState([]);
-      const [apiKey,         setApiKey]         = useState(null);
+      const [session,        setSession]        = useState(null);
+      const [authChecked,    setAuthChecked]    = useState(false);
+      const [apiKeyOverride, setApiKeyOverride] = useState(null); // tras guardar desde ApiKeyPrompt
       const [pinnedIds,      setPinnedIds]      = useState([]);
       const [attachedChip,   setAttachedChip]   = useState(null);
       const [detailItemId,   setDetailItemId]   = useState(null);
 
+      const apiKey = apiKeyOverride
+        || session?.user?.user_metadata?.anthropic_api_key
+        || null;
+
       const t = dark ? DARK : LIGHT;
 
       useEffect(() => {
+        let mounted = true;
+
+        sb.auth.getSession().then(({ data }) => {
+          if (!mounted) return;
+          setSession(data.session ?? null);
+          setAuthChecked(true);
+        });
+
+        const { data: sub } = sb.auth.onAuthStateChange((_event, newSession) => {
+          if (!mounted) return;
+          setSession(newSession ?? null);
+          if (!newSession) {
+            // logout: resetear estado React a vacío
+            setItems([]); setMessages([]); setDark(false); setScreen("home");
+            setActiveCategory("diario"); setHighlights([]); setProfile(emptyProfile());
+            setRestrictions([]); setMotorState(null); setFeedback([]);
+            setPinnedIds([]); setObservations([]); setAttachedChip(null);
+            setApiKeyOverride(null);
+            setLoaded(false);
+          }
+        });
+
+        return () => { mounted = false; sub.subscription.unsubscribe(); };
+      }, []);
+
+      useEffect(() => {
+        if (!session) return;
+        const userId      = session.user.id;
+        const accessToken = session.access_token;
+
         (async () => {
-          await initStorage();
-          const [si, sm, sp, spr, srest, smot, sfb, skey, spin, sobs] = await Promise.all([
+          await initStorage(userId, accessToken);
+          const [si, sm, sp, spr, srest, smot, sfb, spin, sobs] = await Promise.all([
             storageGet(STORAGE_ITEMS),
             storageGet(STORAGE_MESSAGES),
             storageGet(STORAGE_PREFS),
@@ -727,7 +929,6 @@ ${existing || "(nada)"}${historyStr}`;
             storageGet(STORAGE_RESTRICTIONS),
             storageGet(STORAGE_MOTOR),
             storageGet(STORAGE_FEEDBACK),
-            storageGet(STORAGE_APIKEY),
             storageGet(STORAGE_PINNED),
             storageGet(STORAGE_OBSERVATIONS),
           ]);
@@ -736,7 +937,6 @@ ${existing || "(nada)"}${historyStr}`;
           if (Array.isArray(sm)) setMessages(sm);
           if (sp?.dark !== undefined) setDark(sp.dark);
 
-          // Profile: migrate from old string format if needed
           if (spr) {
             if (typeof spr === "string") {
               setProfile({ ...emptyProfile(), context: spr });
@@ -747,7 +947,6 @@ ${existing || "(nada)"}${historyStr}`;
 
           if (Array.isArray(srest)) setRestrictions(srest);
           if (Array.isArray(sfb)) setFeedback(sfb);
-          if (typeof skey === "string") setApiKey(skey);
           if (Array.isArray(spin)) setPinnedIds(spin);
           if (Array.isArray(sobs)) setObservations(sobs);
 
@@ -761,7 +960,7 @@ ${existing || "(nada)"}${historyStr}`;
 
           setLoaded(true);
         })();
-      }, []);
+      }, [session?.user?.id, session?.access_token]);
 
       useEffect(() => { if (loaded) storageSet(STORAGE_ITEMS,        items);        }, [items,        loaded]);
       useEffect(() => { if (loaded) storageSet(STORAGE_MESSAGES,     messages);     }, [messages,     loaded]);
@@ -812,6 +1011,12 @@ ${existing || "(nada)"}${historyStr}`;
         setItems(prev => prev.map(i => i.id === id ? { ...i, ...changes } : i));
       }, []);
 
+      const handleLogout = useCallback(async () => {
+        clearStorageOnLogout();
+        await sb.auth.signOut();
+        // onAuthStateChange se encargará del reset del estado React.
+      }, []);
+
       const handleReset = useCallback(async () => {
         await Promise.all([
           storageDelete(STORAGE_ITEMS), storageDelete(STORAGE_MESSAGES),
@@ -828,13 +1033,21 @@ ${existing || "(nada)"}${historyStr}`;
         setPinnedIds([]); setObservations([]); setAttachedChip(null);
       }, []);
 
-      if (!loaded || motorState === null) return (
+      if (!authChecked) return (
         <div style={{ height: "100%", background: "#F5F1EA", display: "flex", alignItems: "center", justifyContent: "center" }}>
           <Dots t={LIGHT} />
         </div>
       );
 
-      if (!apiKey) return <SetupScreen onSave={setApiKey} />;
+      if (!session) return <AuthScreen />;
+
+      if (!apiKey) return <ApiKeyPrompt onSaved={setApiKeyOverride} />;
+
+      if (!loaded || motorState === null) return (
+        <div style={{ height: "100%", background: "#F5F1EA", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Dots t={LIGHT} />
+        </div>
+      );
 
       const hasRegistro = feedback.length > 0 || observations.length > 0;
 
@@ -861,6 +1074,9 @@ ${existing || "(nada)"}${historyStr}`;
               <div style={{ flex: 1 }} />
               <button onClick={handleReset} title="Reset demo" style={{ background: "transparent", border: `1px solid ${t.border}`, cursor: "pointer", fontSize: 12, color: t.textFaint, padding: "3px 8px", borderRadius: 12, fontFamily: "inherit" }}>
                 Reset
+              </button>
+              <button onClick={handleLogout} title="Cerrar sesión" style={{ background: "transparent", border: `1px solid ${t.border}`, cursor: "pointer", fontSize: 12, color: t.textFaint, padding: "3px 8px", borderRadius: 12, fontFamily: "inherit", marginLeft: 6 }}>
+                Salir
               </button>
               <button onClick={() => setDark(v => !v)} style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 16, color: t.textMid, padding: "0 0 0 6px" }}>
                 {dark ? "☀" : "☾"}
@@ -1449,7 +1665,7 @@ ${existing || "(nada)"}${historyStr}`;
 
       const handleDownload = () => {
         const text = buildExportText();
-        const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+        const blob = new Blob(["﻿" + text], { type: "text/plain;charset=utf-8" });
         const url  = URL.createObjectURL(blob);
         const a    = document.createElement("a");
         a.href = url; a.download = `veritask-registro-${new Date().toISOString().split("T")[0]}.txt`;
