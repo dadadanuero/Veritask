@@ -146,7 +146,7 @@
     const emptyProfile = () => ({ context: "", patterns: [], observations: [] });
 
     const emptyMotor = () => ({
-      phase: "active",
+      phase: "observing",
       criteriaSet: false,
       minProfileComplete: false,
       proactivityTolerance: "unknown",
@@ -881,6 +881,7 @@ ${existing || "(nada)"}${historyStr}`;
       const [pinnedIds,      setPinnedIds]      = useState([]);
       const [attachedChip,   setAttachedChip]   = useState(null);
       const [detailItemId,   setDetailItemId]   = useState(null);
+      const motorEvalRef = useRef(false);
 
       const apiKey = apiKeyOverride
         || session?.user?.user_metadata?.anthropic_api_key
@@ -955,7 +956,11 @@ ${existing || "(nada)"}${historyStr}`;
             await storageSet(STORAGE_MOTOR, initial);
             setMotorState(initial);
           } else {
-            setMotorState({ ...emptyMotor(), ...smot });
+            const merged = { ...emptyMotor(), ...smot };
+            // Migración: "active" era la fase inicial antigua, ahora se llama "observing"
+            if (merged.phase === "active") merged.phase = "observing";
+            await storageSet(STORAGE_MOTOR, merged);
+            setMotorState(merged);
           }
 
           setLoaded(true);
@@ -1116,6 +1121,7 @@ ${existing || "(nada)"}${historyStr}`;
                   apiKey={apiKey}
                   attachedChip={attachedChip}
                   clearChip={() => setAttachedChip(null)}
+                  motorEvalRef={motorEvalRef}
                 />
               : screen === "lists"
               ? <ListsScreen
@@ -1160,7 +1166,7 @@ ${existing || "(nada)"}${historyStr}`;
       profile, setProfile, restrictions, setRestrictions,
       motorState, setMotorState, commitItem, pushMessage,
       highlights, setHighlights, feedback, setFeedback, apiKey,
-      attachedChip, clearChip,
+      attachedChip, clearChip, motorEvalRef,
     }) {
       const [input,            setInput]            = useState("");
       const [analyzing,        setAnalyzing]        = useState(false);
@@ -1168,42 +1174,70 @@ ${existing || "(nada)"}${historyStr}`;
       const [feedbackOtroMode, setFeedbackOtroMode] = useState(false);
       const [feedbackOtroText, setFeedbackOtroText] = useState("");
       const [pendingAskCtx,    setPendingAskCtx]    = useState(null);
-      const bottomRef    = useRef(null);
-      const inputRef     = useRef(null);
-      const motorEvalRef = useRef(false);
+      const bottomRef = useRef(null);
+      const inputRef  = useRef(null);
 
       // Welcome message
       const welcomeInjected = useRef(false);
       useEffect(() => {
-        if (messages.length === 0 && motorState?.phase === "active" && !welcomeInjected.current) {
+        if (messages.length === 0 && motorState?.phase === "observing" && !welcomeInjected.current) {
           welcomeInjected.current = true;
           pushMessage("assistant", WELCOME_MESSAGE);
         }
         if (messages.length > 0) welcomeInjected.current = false;
       }, [messages.length, motorState?.phase]); // eslint-disable-line
 
-      // Motor proactive evaluation — once per session, only when not in active onboarding
-      useEffect(() => {
-        if (!motorState || motorState.phase === "active" || motorEvalRef.current || !apiKey) return;
-        const thirtyMinutesAgo = Date.now() - 30 * 60 * 1000;
-        if (messages.some(m => Math.floor(m.id) > thirtyMinutesAgo)) return;
+      // Motor proactive evaluation
+      const evaluateMotor = useCallback(async () => {
+        if (!motorState || motorState.phase === "observing" || motorEvalRef.current || !apiKey) return;
+
+        // Cooldown proporcional a la tolerancia del usuario
+        const cooldownByTolerance = {
+          high:    30 * 60 * 1000,        // 30 min
+          medium:  2 * 60 * 60 * 1000,    // 2 h
+          low:     6 * 60 * 60 * 1000,    // 6 h
+          unknown: 60 * 60 * 1000,        // 1 h por defecto mientras no se sepa
+        };
+        const cooldownMs = cooldownByTolerance[motorState.proactivityTolerance] ?? cooldownByTolerance.unknown;
+        if (motorState.lastProactiveAt) {
+          const lastTs = new Date(motorState.lastProactiveAt).getTime();
+          if (Date.now() - lastTs < cooldownMs) return;
+        }
+
+        // Guardia: si no hay items pendientes ni observaciones del perfil, no hay materia
+        const hasPendingItems = items.some(i => i.status !== "done");
+        const hasObservations = Array.isArray(profile?.observations) && profile.observations.length > 0;
+        if (!hasPendingItems && !hasObservations) return;
+
         motorEvalRef.current = true;
-        (async () => {
-          try {
-            const result = await callMotorEvaluation(profile, items, restrictions, motorState, apiKey);
-            if (result?.proactive && result.message) {
-              pushMessage("assistant", stripMarkdown(result.message));
-              setMotorState(prev => {
-                const updated = { ...prev, lastProactiveAt: new Date().toISOString() };
-                storageSet(STORAGE_MOTOR, updated);
-                return updated;
-              });
-            }
-          } catch (_) {
-            // Silent fail — motor evaluation is best-effort
+        try {
+          const result = await callMotorEvaluation(profile, items, restrictions, motorState, apiKey);
+          if (result?.proactive && result.message) {
+            pushMessage("assistant", stripMarkdown(result.message));
+            setMotorState(prev => {
+              const updated = { ...prev, lastProactiveAt: new Date().toISOString() };
+              storageSet(STORAGE_MOTOR, updated);
+              return updated;
+            });
           }
-        })();
+        } catch (_) {
+          // Silent fail — motor evaluation is best-effort
+        } finally {
+          motorEvalRef.current = false;
+        }
+      }, [motorState, apiKey, items, profile, restrictions]); // eslint-disable-line
+
+      useEffect(() => {
+        evaluateMotor();
       }, []); // eslint-disable-line
+
+      useEffect(() => {
+        const handleVisibility = () => {
+          if (document.visibilityState === "visible") evaluateMotor();
+        };
+        document.addEventListener("visibilitychange", handleVisibility);
+        return () => document.removeEventListener("visibilitychange", handleVisibility);
+      }, [evaluateMotor]);
 
       useEffect(() => {
         setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
