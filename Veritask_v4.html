@@ -317,6 +317,15 @@ El mensaje es directo, sin introducción ni saludo. Mismo tono natural del resto
 CONTEXTO QUE RECIBES:
 En cada llamada recibes: fecha y hora actuales, perfil del usuario (contexto personal, patrones de comportamiento, observaciones activas), restricciones reales (compromisos y horarios bloqueados), items pendientes con sus IDs, historial reciente del chat, y estado del motor (tolerancia a la proactividad, última intervención proactiva).
 
+PRINCIPIO DE INFORMACIÓN MÍNIMA:
+Un item útil tiene suficiente información para ser accionable. Un item sin contexto suficiente es ruido — se acumula y no ayuda. Antes de registrar, evalúa si el item tiene lo necesario para ser útil cuando el usuario lo vea más tarde.
+¿Qué hace un item accionable? Depende del tipo: una compra necesita solo el nombre del objeto. Una tarea concreta necesita al menos qué hacer. Un evento necesita cuándo. Una idea puede ser vaga, pero debe tener algún hilo conductor.
+La intensidad con la que debes verificar antes de registrar escala con la riqueza del perfil:
+- Perfil vacío o muy limitado: verifica menos. El usuario no está fidelizado aún; registra con poca fricción.
+- Perfil con contexto moderado: pregunta cuando la ambigüedad pueda afectar la utilidad real del item.
+- Perfil rico con historial: confía más. El contexto ya lo tienes; registra con fluidez, solo pregunta ante ambigüedad real.
+Cuando un item necesita contexto adicional para ser útil y no puedes inferirlo del perfil, usa type: ask antes de clasificar. Las preguntas de aclaración sobre el item usan type: ask — no discoveryQuestion.
+
 TONO:
 Hablas como alguien que conoce al usuario y le habla como tal. Natural y presente, sin esfuerzo visible. La calidez está en el registro, no en la cantidad de palabras. Sin formalidad innecesaria, sin efusividad forzada. Respuestas breves pueden ser cálidas; no confundas concisión con frialdad. Te adaptas al estilo del usuario — si es escueto, eres escueto; si da más contexto, tienes más presencia. Nunca te refieres a categorías internas al usuario.
 
@@ -329,6 +338,7 @@ Cuando el usuario introduce algo nuevo, clasifícalo en una de estas cuatro cate
 El label de cualquier item debe ser siempre limpio y conciso — el nombre de la acción o cosa en infinitivo, sin el texto completo del usuario, sin "tengo que", sin contexto de fecha. "tengo que llamar al médico esta semana" → label: "Llamar al médico". "voy al gimnasio por las mañanas" → label: "Gimnasio".
 Si hay ambigüedad real entre categorías, pregunta antes de clasificar. No clasifiques mal por no preguntar.
 Antes de anotar cualquier entrada que describa un hábito o actividad recurrente sin hora ni días concretos, pregunta siempre con type: ask.
+Clasificar es el camino por defecto solo cuando el item tiene información suficiente para ser útil. Si el item es clasificable pero pobre en contexto, aplica el PRINCIPIO DE INFORMACIÓN MÍNIMA: pregunta lo que necesitas antes de registrar.
 
 DETECCIÓN DE CONFLICTOS:
 Antes de anotar cualquier entrada con fecha y hora concreta:
@@ -347,9 +357,19 @@ Cuando registres una restricción real, incluye siempre un campo message con con
 Si la entrada se registra como restrictionUpdate, no la clasifiques también como item. Una entrada es o una restricción real o un item — nunca las dos cosas a la vez.
 
 PREGUNTAS DE DESCUBRIMIENTO:
-Si el perfil no tiene contexto y no hay restricciones registradas, estás en modo de construcción — pregunta antes de asumir cualquier dato ambiguo sobre el usuario. Cuanto menos sepas del usuario, más debes verificar antes de registrar.
-Después de gestionar lo que el usuario pidió, evalúa si el perfil tiene huecos que limitan tu capacidad de ayudar. Si los tiene, haz una pregunta aunque acabes de registrar algo. Una sola pregunta por interacción, nunca antes de gestionar. Prioridad: primero horarios o compromisos recurrentes, segundo criterio para distinguir entre categorías cuando haya ambigüedad habitual, tercero tolerancia a la proactividad. No preguntes algo que el usuario ya respondió. Si el perfil tiene suficiente contexto para funcionar bien, no preguntes nada.
-Las preguntas de descubrimiento sobre horarios o compromisos deben ser siempre abiertas — nunca de Sí/No. No preguntes si el usuario tiene algo; pregunta directamente qué tiene. Se añaden como campo discoveryQuestion en la misma respuesta que gestiona lo que el usuario pidió — no como un type: ask separado. Ese tipo se reserva exclusivamente para ambigüedades de clasificación y conflictos de horario. Si hay opciones concretas, inclúyelas en options. Si no las hay, omite el array de opciones para que el usuario responda libremente.
+Hay dos tipos de preguntas con mecánicas distintas:
+
+1. Preguntas sobre el item (type: ask, bloqueante): cuando necesitas información sobre el item antes de poder clasificarlo o registrarlo. Ambigüedad real entre categorías, conflicto de horario, hábito recurrente sin frecuencia definida, item demasiado vago para ser útil. El flujo se pausa hasta que el usuario responde. Usa type: ask. Incluye pendingItem con el label y la categoría que ya conoces (o null si no la conoces).
+
+2. Preguntas de perfil (discoveryQuestion, no bloqueante): cuando quieres aprender algo del usuario para mejorar la personalización futura. No bloquean el flujo — se añaden como campo adicional a la respuesta que gestiona lo que el usuario pidió. El usuario puede ignorarlas.
+
+Para las preguntas de perfil (discoveryQuestion):
+- Solo una por interacción, siempre después de gestionar lo que el usuario pidió.
+- Prioridad: primero horarios y compromisos recurrentes, segundo criterios de categorización ambiguos, tercero tolerancia a la proactividad.
+- Siempre abiertas cuando preguntas por horarios — nunca de Sí/No. No preguntes si el usuario tiene algo; pregunta directamente qué tiene.
+- No preguntes algo que el usuario ya respondió.
+- Si el perfil tiene suficiente contexto para funcionar bien, no preguntes nada.
+- Se añaden como campo discoveryQuestion: { "question": "", "options": [] }. Si hay opciones concretas, inclúyelas. Si no las hay, omite el array de options.
 
 CONSULTAS Y ACCIONES:
 Si el mensaje del usuario parece una corrección o aclaración de lo que acaba de decir — expresiones como 'esto es para', 'me refería a', 'quiero decir', 'no, que sea', o cualquier reformulación que ajuste algo ya dicho — interpreta siempre como corrección del último item registrado, no como un item nuevo. Nunca crees un item cuyo label sea literalmente la frase de corrección del usuario.
@@ -362,7 +382,7 @@ Devuelve siempre JSON válido. Sin markdown. Sin texto fuera del JSON.
 classify: { "type": "classify", "category": "", "label": "", "datetime": null, "dateLabel": null, "deadline": null, "deadlineLabel": null, "recurrence": null, "message": "" }
 El campo message en classify es obligatorio. Debe ser una confirmación breve y natural que incluya dónde se guardó — por ejemplo "Anotado en compras." o "En tu lista de ideas." — usando el nombre de la categoría de forma natural, no como etiqueta técnica.
 multi: { "type": "multi", "items": [ { "category": "", "label": "" } ] }
-ask: { "type": "ask", "question": "", "options": [], "pendingItem": { "label": "", "category": "" } }
+ask: { "type": "ask", "question": "", "options": [], "pendingItem": { "label": "", "category": "" o null } }
 El tipo ask es OBLIGATORIO en estos casos:
 - Cualquier pregunta antes de clasificar por ambigüedad
 - Cualquier pregunta antes de anotar por conflicto de horario
@@ -372,12 +392,12 @@ action: { "type": "action", "do": "create_item|update_item|update_items|cancel",
 query: { "type": "query", "message": "", "highlights": [] }
 context: { "type": "context", "message": "", "profileUpdate": {} }
 
-Cualquier pregunta al usuario siempre usa type: ask. Si hay opciones concretas, inclúyelas y añade "Otro" al final. Si no hay opciones concretas, omite el array de opciones y el usuario responderá libremente.
+Cualquier pregunta al usuario siempre usa type: ask. Si hay opciones concretas, inclúyelas y añade "Otro" al final. Si la pregunta es abierta (sin opciones concretas), omite el array de opciones y el cliente renderizará un input de texto libre para que el usuario responda.
 
 Cualquier respuesta puede incluir opcionalmente: profileUpdate, restrictionUpdate, onboardingUpdate, message, discoveryQuestion.
 profileUpdate: { "contextUpdate": "string con info nueva" }
 restrictionUpdate: { "label": "string", "days": ["monday",...], "startTime": "HH:MM", "endTime": "HH:MM", "confirmed": true } — días en inglés, todos los campos obligatorios.
-discoveryQuestion (opcional en classify, action, context, query): { "question": "", "options": [] } — añade siempre "Otro" al final si no hay opciones concretas.`;
+discoveryQuestion (opcional en classify, action, context, query): { "question": "", "options": [] } — si hay opciones concretas, inclúyelas; si no las hay, omite el array de options.`;
 
     // ── API ───────────────────────────────────────────────────
     async function callClaude(systemContent, userContent, apiKey) {
@@ -432,7 +452,7 @@ lastProactiveAt: ${motorState.lastProactiveAt || "(nunca)"}`;
     }
 
     // ── PROCESS INPUT ─────────────────────────────────────────
-    async function processInput(text, items, profile, restrictions, motorState, apiKey, pendingItem = null, recentMessages = []) {
+    async function processInput(text, items, profile, restrictions, motorState, apiKey, pendingItem = null, recentMessages = [], openPendingItem = null) {
       const now = getNow();
 
       const existing = items
@@ -470,6 +490,9 @@ ${existing || "(nada)"}${historyStr}`;
         userContent += `\n\nITEM PENDIENTE:\n${JSON.stringify(pendingItem)}\n\nOPCIÓN SELECCIONADA POR EL USUARIO: "${text}"\n\nDevuelve una respuesta de tipo "action" con la acción a ejecutar.`;
       } else {
         userContent += `\n\nENTRADA DEL USUARIO: "${text}"`;
+        if (openPendingItem) {
+          userContent += `\n\nPREGUNTA ABIERTA PENDIENTE:\n${JSON.stringify(openPendingItem)}\n\nLa entrada actual del usuario es respuesta a esta pregunta. Combina la información y devuelve la clasificación enriquecida.`;
+        }
       }
 
       const systemPrompt = MAIN_PROMPT;
@@ -1174,6 +1197,9 @@ ${existing || "(nada)"}${historyStr}`;
       const [feedbackOtroMode, setFeedbackOtroMode] = useState(false);
       const [feedbackOtroText, setFeedbackOtroText] = useState("");
       const [pendingAskCtx,    setPendingAskCtx]    = useState(null);
+      const [openPendingItem,  setOpenPendingItem]  = useState(() => {
+        try { const v = localStorage.getItem("veritask-open-pending"); return v ? JSON.parse(v) : null; } catch (_) { return null; }
+      });
       const bottomRef = useRef(null);
       const inputRef  = useRef(null);
 
@@ -1314,17 +1340,20 @@ ${existing || "(nada)"}${historyStr}`;
             break;
           }
           case "ask": {
-            if (!resp.options || resp.options.length === 0) {
-              if (resp.message) pushMessage("assistant", stripMarkdown(resp.message));
-              break;
-            }
+            if (!resp.question) break;
+            const hasOptions = Array.isArray(resp.options) && resp.options.length > 0;
             setMessages(prev => [...prev, {
               id: Date.now() + Math.random(), role: "ask",
-              question: resp.question || "¿Cómo lo clasifico?",
-              options: resp.options || [],
+              question: resp.question,
+              options: hasOptions ? resp.options : [],
               pendingItem: resp.pendingItem || null,
               selectedIdx: null,
             }]);
+            if (!hasOptions) {
+              const pendingData = resp.pendingItem || { label: resp.question };
+              setOpenPendingItem(pendingData);
+              try { localStorage.setItem("veritask-open-pending", JSON.stringify(pendingData)); } catch (_) {}
+            }
             break;
           }
           case "action": {
@@ -1366,7 +1395,7 @@ ${existing || "(nada)"}${historyStr}`;
             selectedIdx: null,
           }]);
         }
-      }, [commitItem, pushMessage, setMessages, setProfile, setRestrictions, setMotorState, setHighlights, setItems]);
+      }, [commitItem, pushMessage, setMessages, setProfile, setRestrictions, setMotorState, setHighlights, setItems, setOpenPendingItem]);
 
       const handleOptionSelect = useCallback(async (askMsgId, idx) => {
         const askMsg = messages.find(m => m.id === askMsgId && m.role === "ask");
@@ -1395,7 +1424,10 @@ ${existing || "(nada)"}${historyStr}`;
         setHighlights([]);
         const chip = attachedChip;
         const askCtx = pendingAskCtx;
+        const openPending = openPendingItem;
         setPendingAskCtx(null);
+        setOpenPendingItem(null);
+        try { localStorage.removeItem("veritask-open-pending"); } catch (_) {}
         clearChip();
         setInput("");
 
@@ -1405,7 +1437,7 @@ ${existing || "(nada)"}${historyStr}`;
         setAnalyzing(true);
         try {
           const apiText = chip ? `[Contexto: item "${chip.label}"] ${text}` : text;
-          const resp = await processInput(apiText, items, profile, restrictions, motorState, apiKey, askCtx?.pendingItem ?? null, messages);
+          const resp = await processInput(apiText, items, profile, restrictions, motorState, apiKey, askCtx?.pendingItem ?? null, messages, openPending);
           await applyResponse(resp, text);
         } catch (e) {
           const errMsg = e?.message || "";
@@ -1418,7 +1450,7 @@ ${existing || "(nada)"}${historyStr}`;
         }
         setAnalyzing(false);
         inputRef.current?.focus();
-      }, [input, analyzing, attachedChip, clearChip, pendingAskCtx, items, profile, restrictions, motorState, apiKey, applyResponse, commitItem, pushMessage, setHighlights, messages]);
+      }, [input, analyzing, attachedChip, clearChip, pendingAskCtx, openPendingItem, items, profile, restrictions, motorState, apiKey, applyResponse, commitItem, pushMessage, setHighlights, messages]);
 
       const pending = items.filter(i => i.status === "pending").length;
 
