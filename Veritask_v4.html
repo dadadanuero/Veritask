@@ -1189,25 +1189,18 @@ ${existing || "(nada)"}${historyStr}`;
 
       // Motor proactive evaluation
       const evaluateMotor = useCallback(async () => {
-        if (!motorState || motorState.phase === "observing" || motorEvalRef.current || !apiKey) return;
+        if (!motorState || motorEvalRef.current || !apiKey) return;
 
-        // Cooldown proporcional a la tolerancia del usuario
-        const cooldownByTolerance = {
-          high:    30 * 60 * 1000,        // 30 min
-          medium:  2 * 60 * 60 * 1000,    // 2 h
-          low:     6 * 60 * 60 * 1000,    // 6 h
-          unknown: 60 * 60 * 1000,        // 1 h por defecto mientras no se sepa
-        };
-        const cooldownMs = cooldownByTolerance[motorState.proactivityTolerance] ?? cooldownByTolerance.unknown;
+        // Cooldown fijo de 15 minutos, independiente del perfil
+        const cooldownMs = 15 * 60 * 1000;
         if (motorState.lastProactiveAt) {
           const lastTs = new Date(motorState.lastProactiveAt).getTime();
           if (Date.now() - lastTs < cooldownMs) return;
         }
 
-        // Guardia: si no hay items pendientes ni observaciones del perfil, no hay materia
+        // Guardia: al menos un item pendiente
         const hasPendingItems = items.some(i => i.status !== "done");
-        const hasObservations = Array.isArray(profile?.observations) && profile.observations.length > 0;
-        if (!hasPendingItems && !hasObservations) return;
+        if (!hasPendingItems) return;
 
         motorEvalRef.current = true;
         try {
