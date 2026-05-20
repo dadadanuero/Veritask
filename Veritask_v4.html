@@ -298,6 +298,9 @@
     const WELCOME_MESSAGE = `Hola. Soy Veritask. Escríbeme lo que tengas en la cabeza — una tarea, una idea, algo que comprar. Sin categorías, sin formularios.`;
 
     // ── PROMPTS ───────────────────────────────────────────────
+    // ── DEBUG: últimas respuestas crudas del modelo ──────────
+    let LAST_RAW_RESPONSES = [];
+
     const MOTOR_PROMPT = `Eres el motor de proactividad de Veritask. Tu única función es evaluar si hay algo concreto y útil que decirle al usuario en este momento, sin que él lo haya pedido.
 
 CRITERIOS PARA HABLAR:
@@ -1488,6 +1491,8 @@ ${existing || "(nada)"}${historyStr}`;
         try {
           const apiText = chip ? `[Contexto: item "${chip.label}"] ${text}` : text;
           const resp = await processInput(apiText, items, profile, restrictions, motorState, apiKey, askCtx?.pendingItem ?? null, messages, openPending);
+          LAST_RAW_RESPONSES.push({ ts: new Date().toISOString(), userText: text, raw: resp });
+          if (LAST_RAW_RESPONSES.length > 100) LAST_RAW_RESPONSES.shift();
           await applyResponse(resp, text);
         } catch (e) {
           const errMsg = e?.message || "";
@@ -1726,9 +1731,19 @@ ${existing || "(nada)"}${historyStr}`;
         // Mensajes de conversación
         messages.forEach(msg => {
           if (msg.role === "user" || msg.role === "assistant") {
+            let text = `[${msg.role === "user" ? "Tú" : "Veritask"}] ${msg.text}`;
+            if (msg.role === "assistant") {
+              const match = LAST_RAW_RESPONSES.find(r => {
+                const diff = Math.abs(new Date(r.ts) - new Date(msg.createdAt || 0));
+                return diff < 5000;
+              });
+              if (match) {
+                text += `\n  [JSON] ${JSON.stringify(match.raw)}`;
+              }
+            }
             entries.push({
               ts: msg.createdAt || new Date().toISOString(),
-              text: `[${msg.role === "user" ? "Tú" : "Veritask"}] ${msg.text}`
+              text
             });
           }
         });
